@@ -1,0 +1,43 @@
+# Core
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+
+# Database
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.1
+psycopg2-binary==2.9.10
+pgvector==0.3.6
+
+# Simulation & Correctness (Layer 2)
+sympy==1.13.3
+scipy==1.15.0
+numpy==2.2.1
+shapely==2.0.6
+
+# WebSocket
+websockets==14.1
+
+# Logging & Observability
+structlog==24.4.0
+opentelemetry-api==1.29.0
+opentelemetry-sdk==1.29.0
+prometheus-client==0.21.1
+
+# TTS
+edge-tts==6.1.19
+
+# HTTP client
+httpx==0.28.1
+
+# Auth & Security
+bcrypt==5.0.0
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.20
+
+# Utilities
+orjson==3.10.13
+python-ulid==3.0.0

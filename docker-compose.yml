@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: Sarasvi_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: Sarasvi
+      POSTGRES_PASSWORD: Sarasvi_dev_2024
+      POSTGRES_DB: Sarasvi
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U Sarasvi" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: Sarasvi_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://Sarasvi:Sarasvi_dev_2024@postgres:5432/Sarasvi
+      DATABASE_URL_SYNC: postgresql://Sarasvi:Sarasvi_dev_2024@postgres:5432/Sarasvi
+      ENVIRONMENT: development
+      LOG_LEVEL: DEBUG
+      CORS_ORIGINS: '["http://localhost:3000"]'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug"
+
+volumes:
+  pgdata:
+    driver: local

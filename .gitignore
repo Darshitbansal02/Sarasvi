@@ -1,0 +1,95 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  Medhā / Sarasvi — .gitignore
+#  Only push source code. NEVER push secrets, databases, or build artifacts.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── Secrets / Environment Files ───────────────────────────────────────────────
+.env
+.env.*
+.env.example        # allow the example/template to be committed
+.env.local
+.env.*.local
+backend/.env
+frontend/.env.local
+
+# ── Local Databases (dev SQLite — never commit) ───────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+Sarasvi.db*
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+.virtualenv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# ── Node / Next.js / Frontend ─────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# ── Student memory / AI session data (large binary blobs) ─────────────────────
+student_memory/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+pip-log.txt
+
+# ── OS / Editor Artifacts ─────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Test & scratch files ──────────────────────────────────────────────────────
+_trash/
+scratch_response.json
+test.mp3
+test_*.py
+*_stress.py
+
+# ── Docker (local overrides — keep Dockerfile and docker-compose.yml) ─────────
+.dockerignore
+docker-compose.override.yml
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.tmp
+*.bak
+*.orig
+.antigravitycli/
+.claude/
+CLAUDE.md

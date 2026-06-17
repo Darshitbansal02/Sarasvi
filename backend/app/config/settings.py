@@ -65,8 +65,32 @@ class Settings(BaseSettings):
     @classmethod
     def parse_cors_origins(cls, v):
         if isinstance(v, str):
-            return json.loads(v)
-        return v
+            v = v.strip()
+            if v.startswith("[") and v.endswith("]"):
+                try:
+                    origins = json.loads(v)
+                except Exception:
+                    origins = [v]
+            elif "," in v:
+                origins = [o.strip() for o in v.split(",") if o.strip()]
+            elif v:
+                origins = [v]
+            else:
+                origins = []
+        elif isinstance(v, list):
+            origins = v
+        else:
+            origins = []
+        
+        # Clean up origins: strip spaces and trailing slashes
+        cleaned = []
+        for origin in origins:
+            if isinstance(origin, str):
+                o = origin.strip()
+                if o.endswith("/"):
+                    o = o[:-1]
+                cleaned.append(o)
+        return cleaned
 
     # ── WebSocket ────────────────────────────────────────────────
     ws_heartbeat_interval: int = 30  # seconds

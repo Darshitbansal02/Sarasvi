@@ -28,7 +28,7 @@ opentelemetry-sdk==1.29.0
 prometheus-client==0.21.1
 
 # TTS
-edge-tts==6.1.19
+edge-tts==7.2.8
 
 # HTTP client
 httpx==0.28.1

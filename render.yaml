@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: sarasvi-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DB_PGBOUNCER_MODE
+        value: "true"
+      - key: DB_REQUIRE_SSL
+        value: "true"
+      - key: LLM_MAX_CONCURRENT
+        value: "1"
+      - key: LLM_MIN_INTERVAL_SEC
+        value: "0.1"
+      - key: JWT_ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "10080"
+      # ── Set these as SECRET env vars in Render dashboard (never hardcode): ──
+      # DATABASE_URL
+      # DATABASE_URL_SYNC
+      # JWT_SECRET_KEY
+      # GEMINI_API_KEY
+      # GROQ_API_KEY
+      # CORS_ORIGINS

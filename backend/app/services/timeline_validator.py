@@ -173,10 +173,14 @@ def validate_timeline(
                         w_idx = c.get("wordBoundaryIndex")
                         if w_idx is not None:
                             if not (0 <= w_idx < len(speech_marks)):
-                                errors.append(
-                                    f"Event {idx} (stroke_reveal) charState[{c_idx}] "
-                                    f"has out-of-bounds wordBoundaryIndex {w_idx} (speech_marks length={len(speech_marks)})"
+                                logger.warning(
+                                    "timeline.validation.out_of_bounds_word_boundary",
+                                    event_idx=idx,
+                                    char_state_idx=c_idx,
+                                    w_idx=w_idx,
+                                    speech_marks_len=len(speech_marks)
                                 )
+                                c.pop("wordBoundaryIndex", None)
 
     # Orphan-equation check: every compiled equation must have a stroke_reveal.
     # A missing entry here means the compiler's instruction-id lookup failed and

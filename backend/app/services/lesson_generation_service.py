@@ -200,6 +200,11 @@ def align_char_states_to_speech(layout_asset, strokes, speech_marks, event_start
     if not glyphs or not char_states:
         return
 
+    # Reset any stale wordBoundaryIndex first to prevent carry-over from other speech segments
+    for c in char_states:
+        if isinstance(c, dict):
+            c.pop("wordBoundaryIndex", None)
+
     glyph_to_word: dict[int, int] = {}
     # Track only glyphs that matched via an exact or SYMBOL_WORD_MAP lookup.
     # Fallback assignments (min(current_word_idx, ...)) are intentionally excluded

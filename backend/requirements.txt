@@ -7,14 +7,14 @@ python-dotenv==1.0.1
 
 # Database
 sqlalchemy[asyncio]==2.0.36
-asyncpg==0.30.0
+asyncpg==0.31.0
 alembic==1.14.1
 psycopg2-binary==2.9.10
 pgvector==0.3.6
 
 # Simulation & Correctness (Layer 2)
 sympy==1.13.3
-scipy==1.15.0
+scipy==1.15.2
 numpy==2.2.1
 shapely==2.0.6
 

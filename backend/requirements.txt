@@ -38,6 +38,9 @@ bcrypt==5.0.0
 python-jose[cryptography]==3.3.0
 python-multipart==0.0.20
 
+# Image Processing
+Pillow==11.2.1
+
 # Utilities
 orjson==3.10.13
 python-ulid==3.0.0

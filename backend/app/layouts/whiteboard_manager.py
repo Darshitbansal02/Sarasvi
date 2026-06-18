@@ -140,6 +140,14 @@ class WhiteboardManager:
             self._flow._y    = MARGIN_TOP
 
     @property
+    def current_column(self) -> str:
+        return self._flow.current_column
+
+    def set_column(self, column: str) -> None:
+        """Set the active column for content placement (full | left | right)."""
+        self._flow.set_column(column)
+
+    @property
     def region_manager(self) -> SpatialRegionManager:
         return self._region_mgr
 

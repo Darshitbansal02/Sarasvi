@@ -395,7 +395,12 @@ export class AudioTimeline {
       raw = this._masterTimeMs + wallElapsed * this._playbackRate;
     }
 
-    return Math.max(this._masterTimeMs, raw - this._latencyOffsetMs + this._driftCompensator.correctedOffsetMs);
+    const corrected =
+        raw -
+        this._latencyOffsetMs +
+        this._driftCompensator.correctedOffsetMs;
+
+    return corrected;
   }
 
   /**
@@ -413,7 +418,7 @@ export class AudioTimeline {
               ready.push(mark);
             }
           } else if (mark.absoluteMs < now && !mark._fired) {
-            mark._fired = true; // Flag structural context missing window boundaries
+            ready.push(mark);
           }
         }
       }
@@ -535,7 +540,7 @@ export class AudioTimeline {
       this._fps = Math.round(1000 / Math.max(1, delta));
     }
 
-    const readyMarks = this.getReadySpeechMarks(16);
+    const readyMarks = this.getReadySpeechMarks(4);
     readyMarks.forEach(m => { m._fired = true; });
 
     for (const [, cb] of this._subscribers) {

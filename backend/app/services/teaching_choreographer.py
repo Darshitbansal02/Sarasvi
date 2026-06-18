@@ -641,5 +641,3 @@ class TeachingChoreographer:
         return steps
 
 teaching_choreographer = TeachingChoreographer()
-
-

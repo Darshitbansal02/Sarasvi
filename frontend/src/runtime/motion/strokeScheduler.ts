@@ -439,14 +439,14 @@ export class StrokeScheduler {
     // jump can't snap the whole stroke at once; the runtime clock is already
     // surge-clamped upstream, so steady playback tracks the audio exactly.
     const audioElapsed = absoluteTimeMs - stroke.startMs;
-    const targetProgress = stroke.durationMs > 0
-      ? Math.max(0, Math.min(1, audioElapsed / stroke.durationMs))
-      : 1;
-    const maxStep = Math.max(0.04, (deltaMs / Math.max(1, stroke.durationMs)) * 3);
-    const advance = Math.min(targetProgress - stroke.currentProgress, maxStep);
-    if (advance > 0) {
-      stroke.currentProgress = Math.min(1.0, stroke.currentProgress + advance);
-    }
+
+    stroke.currentProgress =
+        stroke.durationMs > 0
+            ? Math.max(
+                  0,
+                  Math.min(1, audioElapsed / stroke.durationMs)
+              )
+            : 1;
 
     const easedProgress = Easing.humanDraw(stroke.currentProgress);
     stroke.progress = easedProgress;
@@ -508,7 +508,7 @@ export class StrokeScheduler {
       const dx = cursorPosition.x - px;
       const dy = cursorPosition.y - py;
       const dist = Math.hypot(dx, dy);
-      const coupling = Math.min(0.985, 0.56 + dist / 20);
+      const coupling = Math.min(0.85, 0.56 + dist / 20);
       px += dx * coupling;
       py += dy * coupling;
 

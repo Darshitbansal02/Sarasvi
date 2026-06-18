@@ -342,6 +342,23 @@ export class ConstructionRuntime {
     for (const a of firedAnchors) this._executeNarrationAnchor(a, timeMs);
   }
 
+  private _shiftCharStates(states: CharStateEntry[] | undefined, newStartMs: number): CharStateEntry[] | undefined {
+    if (!states || states.length === 0) return states;
+
+    const oldStartMs = Math.min(...states.map((s) => s.startMs));
+    const delta = newStartMs - oldStartMs;
+
+    if (Math.abs(delta) < 1) return states;
+
+    return states.map((s) => ({
+      ...s,
+      startMs: s.startMs + delta,
+      endMs: s.endMs + delta,
+      absoluteStartMs: s.absoluteStartMs !== undefined ? s.absoluteStartMs + delta : undefined,
+      absoluteEndMs: s.absoluteEndMs !== undefined ? s.absoluteEndMs + delta : undefined,
+    }));
+  }
+
   /**
    * Procedural trajectory calculator routing writing paths safely.
    *
@@ -366,6 +383,9 @@ export class ConstructionRuntime {
     }
 
     if (activeTextObj) {
+      // If layout assets haven't arrived yet, do NOT move the cursor to (0,0) or safe coordinates.
+      // The cursor should remain at its last physical position (from the tick loop or previous strokes)
+      // until the strokes are actually available to trace.
       if (!activeTextObj._charStates?.length || !activeTextObj._glyphsLayout?.length) {
         let strokes = [];
         let totalTextWidth = 0;
@@ -388,6 +408,12 @@ export class ConstructionRuntime {
           }
         }
         
+        // If we STILL don't have strokes after checking the compiled artifact, 
+        // return early without updating _writingTip or cursor. This prevents the "teleport to top-left" bug.
+        if (strokes.length === 0) {
+          return;
+        }
+
         const pageIdx = activeTextObj.pageIndex ?? (activeTextObj.sceneId ? (parseInt(activeTextObj.sceneId.split("_")[1]) || 0) : 0);
         const pageOffset = pageIdx * BOARD_WIDTH;
         const fallbackX = pageOffset + BOARD_WIDTH / 2;
@@ -404,7 +430,7 @@ export class ConstructionRuntime {
 
         let charStates: CharStateEntry[] = [];
         if (precomputedCharStates) {
-          charStates = precomputedCharStates;
+          charStates = this._shiftCharStates(precomputedCharStates, activeTextObj.startMs) || [];
         }
 
         activeTextObj._charStates = charStates;
@@ -415,7 +441,7 @@ export class ConstructionRuntime {
         activeTextObj._safeTextY = safeTextY;
         activeTextObj._safeTextX = safeTextX;
 
-        // Teleport the cursor to the first stroke position and reset velocity to avoid old momentum trailing lines
+        // Teleport the cursor to the first stroke position and reset velocity ONLY if we have strokes.
         if (strokes.length > 0) {
           const firstStroke = strokes[0];
           const startPt = (firstStroke.points && firstStroke.points.length > 0) ? firstStroke.points[0] : [firstStroke.x1, firstStroke.y1];
@@ -456,11 +482,7 @@ export class ConstructionRuntime {
         
         if (currentWrite && strokes.at(currentWrite.strokeIndex)) {
           const strokeIndex = currentWrite.strokeIndex;
-          const activeStrokeState = charStates.find(
-            (c) =>
-              c.type === "stroke" &&
-              (c.strokeIndex === strokeIndex || c.id === `line_${strokeIndex}`)
-          ) ?? { ...currentWrite.cState, strokeIndex, type: "stroke" as const, id: `line_${strokeIndex}` };
+          const activeStrokeState = currentWrite.cState;
  
           const s = strokes.at(strokeIndex)!;
           const strokeDur = activeStrokeState.endMs - activeStrokeState.startMs;
@@ -503,8 +525,8 @@ export class ConstructionRuntime {
           const _prevCX = this.cursor.x ?? tx;
           const _prevCY = this.cursor.y ?? ty;
           this.cursor.setPosition(
-            _prevCX + (tx - _prevCX) * (isDrawing ? 0.92 : 1.0),
-            _prevCY + (ty - _prevCY) * (isDrawing ? 0.92 : 1.0),
+            _prevCX + (tx - _prevCX) * (isDrawing ? 0.98 : 1.0),
+            _prevCY + (ty - _prevCY) * (isDrawing ? 0.98 : 1.0),
           );
 
           this.cursor.penDown = isDrawing;
@@ -1096,6 +1118,8 @@ export class ConstructionRuntime {
       }
     }
 
+    const shiftedCharStates = this._shiftCharStates(plannedCharStates, effectiveStart);
+
     this._sceneObjects[targetId] = {
       id: targetId,
       type: "equation_write",
@@ -1110,7 +1134,7 @@ export class ConstructionRuntime {
       sceneId: sceneStamp.sceneId,
       pageIndex: sceneStamp.pageIndex,
       _inkAuthority: "static",
-      _charStates: plannedCharStates,
+      _charStates: shiftedCharStates,
       _glyphsLayout: glyphs,
       _strokesLayout: strokes,
       _totalTextWidth: totalTextWidth,
@@ -1123,7 +1147,7 @@ export class ConstructionRuntime {
     };
     
     const finalCharStates = (this._sceneObjects[targetId]?._charStates ??
-      plannedCharStates) as CharStateEntry[] | undefined;
+      shiftedCharStates) as CharStateEntry[] | undefined;
     const laneDuration = Math.max(
       syncedDuration,
       getEquationWriteEndMs({ startMs: effectiveStart, _charStates: finalCharStates }) - effectiveStart
@@ -1180,6 +1204,8 @@ export class ConstructionRuntime {
     const safeTextY = Math.max(12, Math.min(750 - 12, position.y ?? 0));
     const sceneStamp = resolveSceneStampFromPayload(payload, this._sceneObjects[id] as any);
 
+    const shiftedCharStates = this._shiftCharStates(precomputedCharStates, effectiveStart);
+
     this._sceneObjects[id] = {
       id,
       type: objectType,
@@ -1194,7 +1220,7 @@ export class ConstructionRuntime {
       sceneId: sceneStamp.sceneId,
       pageIndex: sceneStamp.pageIndex,
       _inkAuthority: "static",
-      _charStates: precomputedCharStates,
+      _charStates: shiftedCharStates,
       _glyphsLayout: glyphs,
       _strokesLayout: strokes,
       _totalTextWidth: totalTextWidth,
@@ -1344,6 +1370,9 @@ export class ConstructionRuntime {
       if (Reflect.has(this._sceneObjects, id)) {
         const obj = Reflect.get(this._sceneObjects, id);
         obj._fadeTarget = 1;
+        if (obj._charStates && obj._charStates.length > 0) {
+          obj._charStates = this._shiftCharStates(obj._charStates, timeMs);
+        }
         obj.startMs = timeMs;
       }
     }

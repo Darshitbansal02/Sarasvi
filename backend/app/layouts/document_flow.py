@@ -92,6 +92,9 @@ class DocumentFlowLayout:
         self._page:          int      = 0
         self._y:             float    = MARGIN_TOP
         self._transitions:   list[dict[str, Any]] = []
+        self._column:        str      = "full" # full | left | right
+        self._y_left:        float    = MARGIN_TOP
+        self._y_right:       float    = MARGIN_TOP
 
     # ── Configuration ──────────────────────────────────────────────
 
@@ -99,12 +102,40 @@ class DocumentFlowLayout:
         """Set the usable horizontal width of the writing column."""
         self._content_width = max(300.0, width)
 
+    def set_column(self, column: str) -> None:
+        """
+        Set the active column for content placement.
+        full  — uses the entire content width
+        left  — uses the left half of the content width
+        right — uses the right half of the content width
+        """
+        if column not in ("full", "left", "right"):
+            return
+        
+        # When switching to full, sync y to the lowest point reached in columns
+        if column == "full" and self._column != "full":
+            self._y = max(self._y_left, self._y_right)
+        
+        # When switching from full to columns, initialize column y
+        if column != "full" and self._column == "full":
+            self._y_left = self._y
+            self._y_right = self._y
+
+        self._column = column
+
     def reset(self) -> None:
         self._page = 0
         self._y    = MARGIN_TOP
+        self._y_left = MARGIN_TOP
+        self._y_right = MARGIN_TOP
+        self._column = "full"
         self._transitions.clear()
 
     # ── Read-only state ────────────────────────────────────────────
+
+    @property
+    def current_column(self) -> str:
+        return self._column
 
     @property
     def page(self) -> int:
@@ -116,21 +147,42 @@ class DocumentFlowLayout:
 
     @property
     def content_width(self) -> float:
-        return self._content_width
+        if self._column == "full":
+            return self._content_width
+        return (self._content_width - GAP_MEDIUM) / 2
 
     @property
     def center_x(self) -> float:
-        """Horizontal centre of the content column on the current page."""
-        return self._page_x_offset() + MARGIN_LEFT + self._content_width / 2
+        """Horizontal centre of the active column on the current page."""
+        ox = self._page_x_offset()
+        if self._column == "full":
+            return ox + MARGIN_LEFT + self._content_width / 2
+        if self._column == "left":
+            return ox + MARGIN_LEFT + self.content_width / 2
+        # right
+        return ox + MARGIN_LEFT + self.content_width + GAP_MEDIUM + self.content_width / 2
 
     @property
     def left_x(self) -> float:
-        """Left edge of the content column on the current page."""
-        return self._page_x_offset() + MARGIN_LEFT
+        """Left edge of the active column on the current page."""
+        ox = self._page_x_offset()
+        if self._column == "left" or self._column == "full":
+            return ox + MARGIN_LEFT
+        # right
+        return ox + MARGIN_LEFT + self.content_width + GAP_MEDIUM
 
     @property
     def current_y(self) -> float:
+        if self._column == "left":
+            return self._y_left
+        if self._column == "right":
+            return self._y_right
         return self._y
+
+    @property
+    def available_on_page(self) -> float:
+        """Expose remaining vertical space on the current page for spatial awareness."""
+        return self._available_on_page()
 
     # ── Scene transitions ──────────────────────────────────────────
 
@@ -163,11 +215,12 @@ class DocumentFlowLayout:
             "left"   — flush to the left margin
             "right"  — flush to the right edge of the content column
         """
+        col_w = self.content_width
         if item_width is None:
-            item_width = self._content_width
+            item_width = col_w
 
         item_height = max(1.0, item_height)
-        item_width  = max(1.0, min(item_width, self._content_width))
+        item_width  = max(1.0, min(item_width, col_w))
 
         if force_new_page:
             self._advance_page()
@@ -175,34 +228,49 @@ class DocumentFlowLayout:
             self._ensure_fits(item_height)
 
         ox = self._page_x_offset()
+        base_lx = self.left_x
 
         if align == "center":
-            lx = ox + MARGIN_LEFT + (self._content_width - item_width) / 2
+            lx = base_lx + (col_w - item_width) / 2
         elif align == "right":
-            lx = ox + MARGIN_LEFT + self._content_width - item_width
+            lx = base_lx + col_w - item_width
         else:   # left
-            lx = ox + MARGIN_LEFT
+            lx = base_lx
+
+        curr_y = self.current_y
 
         pos = Position(
             x=lx,
-            y=self._y,
+            y=curr_y,
             cx=lx + item_width / 2,
-            cy=self._y + item_height / 2,
+            cy=curr_y + item_height / 2,
             width=item_width,
             height=item_height,
             page=self._page,
             scene_id=f"scene_{self._page}",
         )
 
-        self._y += item_height + gap_after
+        new_y = curr_y + item_height + gap_after
+        if self._column == "left":
+            self._y_left = new_y
+        elif self._column == "right":
+            self._y_right = new_y
+        else:
+            self._y = new_y
+            
         return pos
 
     def spacer(self, height: float = GAP_SECTION) -> None:
         """Insert blank vertical space (e.g. between lesson sections)."""
-        if self._y + height > PAGE_H - MARGIN_BOTTOM:
+        if self.current_y + height > PAGE_H - MARGIN_BOTTOM:
             self._advance_page()
         else:
-            self._y += height
+            if self._column == "left":
+                self._y_left += height
+            elif self._column == "right":
+                self._y_right += height
+            else:
+                self._y += height
 
     # ── Height estimators ──────────────────────────────────────────
 
@@ -248,7 +316,7 @@ class DocumentFlowLayout:
         """
         if not text:
             return font_size * 1.6 + padding
-        chars_per_line  = max(1.0, self._content_width / (font_size * 0.55))
+        chars_per_line  = max(1.0, self.content_width / (font_size * 0.55))
         n_lines         = max(1, math.ceil(len(text) / chars_per_line))
         return n_lines * font_size * 1.6 + padding
 
@@ -307,7 +375,7 @@ class DocumentFlowLayout:
         return PAGE_H - MARGIN_TOP - MARGIN_BOTTOM
 
     def _available_on_page(self) -> float:
-        return PAGE_H - MARGIN_BOTTOM - self._y
+        return PAGE_H - MARGIN_BOTTOM - self.current_y
 
     def _ensure_fits(self, item_height: float) -> None:
         """Advance to next page if item_height doesn't fit."""
@@ -317,6 +385,8 @@ class DocumentFlowLayout:
     def _advance_page(self) -> None:
         self._page += 1
         self._y     = MARGIN_TOP
+        self._y_left = MARGIN_TOP
+        self._y_right = MARGIN_TOP
         self._transitions.append({
             "scene_index": self._page,
             "scene_id":    f"scene_{self._page}",

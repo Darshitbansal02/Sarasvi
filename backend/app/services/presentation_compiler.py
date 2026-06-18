@@ -849,7 +849,35 @@ class PresentationCompiler:
                     if not draw_order:
                         draw_order = list(range(num_strokes))
 
-                    curr_stroke_ms = float(reveal_start)
+                    speech_evt = next(
+                        (
+                            e for e in reversed(timeline)
+                            if e["type"] == "speech"
+                            and e["event_id"] == parent_id
+                        ),
+                        None
+                    )
+
+                    actual_reveal_start = current_time_ms
+
+                    if speech_evt:
+                        speech_words = speech_evt["payload"].get("words", [])
+
+                        if speech_words:
+                            speech_start = speech_evt["start_ms"]
+
+                            speech_overlap_start = (
+                                speech_start +
+                                int(speech_evt["payload"]["duration_ms"] * 0.1)
+                            )
+
+                            actual_reveal_start = max(
+                                current_time_ms,
+                                speech_overlap_start
+                            )
+
+                    curr_stroke_ms = float(actual_reveal_start)
+
                     char_states = [None] * num_strokes
                     for oi, i in enumerate(draw_order):
                         stroke_draw_dur = draw_duration * (stroke_lengths[i] / total_length)
@@ -871,23 +899,25 @@ class PresentationCompiler:
                             char_states[i] = {
                                 "id": f"line_{i}",
                                 "type": "stroke",
-                                "startMs": int(reveal_start),
-                                "endMs": int(reveal_start + reveal_duration),
                                 "strokeIndex": i,
-                                "absoluteStartMs": int(reveal_start),
-                                "absoluteEndMs": int(reveal_start + reveal_duration)
+                                "startMs": int(actual_reveal_start),
+                                "endMs": int(actual_reveal_start + reveal_duration),
+                                "absoluteStartMs": int(actual_reveal_start),
+                                "absoluteEndMs": int(actual_reveal_start + reveal_duration)
                             }
-                    
+
+                    layout_assets[obj_id]["_revealStartMs"] = actual_reveal_start
                     layout_assets[obj_id]["_charStates"] = char_states
                     layout_assets[obj_id]["_totalTextWidth"] = width
                     layout_assets[obj_id]["_safeTextX"] = safe_x
                     layout_assets[obj_id]["_safeTextY"] = safe_y
                     layout_assets[obj_id]["_constructionSequence"] = construction_sequence
+                    reveal_start = actual_reveal_start
 
                 timeline.append({
                     "event_id": step.step_id,
                     "parent_event_id": parent_id,
-                    "start_ms": reveal_start,
+                    "start_ms": actual_reveal_start,
                     "type": "stroke_reveal",
                     "payload": {
                         "object_id": obj_id,
@@ -896,7 +926,7 @@ class PresentationCompiler:
                     }
                 })
                 # Effective end of stroke: start + duration, minus the overlap reclaim
-                current_time_ms = reveal_start + reveal_duration
+                current_time_ms = actual_reveal_start + reveal_duration
                 
                 # Update pointer to ending position
                 if strokes:

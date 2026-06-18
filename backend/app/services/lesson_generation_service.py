@@ -243,10 +243,38 @@ def align_char_states_to_speech(layout_asset, strokes, speech_marks, event_start
         if char_idx is not None and char_idx in confident_glyphs:
             w_idx = glyph_to_word[char_idx]
             word_mark = speech_marks[w_idx]
-            word_time_ms = int(word_mark.get("time", 0))
-            word_dur_ms = int(word_mark.get("duration", 300))
-            c["startMs"] = event_start_ms + word_time_ms
-            c["endMs"] = event_start_ms + word_time_ms + word_dur_ms
+
+            word_start = int(word_mark.get("time", 0))
+            word_duration = max(
+                120,
+                int(word_mark.get("duration", 300))
+            )
+
+            glyph_indices = [
+                g
+                for g, mapped_word in glyph_to_word.items()
+                if mapped_word == w_idx
+            ]
+
+            glyph_indices.sort()
+
+            try:
+                local_index = glyph_indices.index(char_idx)
+            except ValueError:
+                local_index = 0
+
+            total_chars = max(1, len(glyph_indices))
+
+            char_start = word_start + int(
+                word_duration * (local_index / total_chars)
+            )
+
+            char_end = word_start + int(
+                word_duration * ((local_index + 1) / total_chars)
+            )
+
+            c["startMs"] = event_start_ms + char_start
+            c["endMs"] = event_start_ms + char_end
             c["absoluteStartMs"] = c["startMs"]
             c["absoluteEndMs"] = c["endMs"]
             c["wordBoundaryIndex"] = w_idx
@@ -767,6 +795,16 @@ class LessonGenerationService:
                         if _asset and _strokes and _speech_marks:
                             speech_start_ms = event["start_ms"]
                             align_char_states_to_speech(_asset, _strokes, _speech_marks, speech_start_ms)
+                            
+                            # Re-anchor the event itself to the first reveal timestamp.
+                            # This ensures the frontend starts the writing motor (which allocates the board
+                            # and moves the cursor) exactly when the first synced stroke is due,
+                            # rather than waiting for the original estimated event start.
+                            _cs = _asset.get("_charStates")
+                            if _cs:
+                                earliest = min((c.get("startMs", float('inf')) for c in _cs), default=None)
+                                if earliest is not None and earliest != float('inf'):
+                                    stroke_reveal_event["start_ms"] = int(earliest)
 
         from app.verification.gateway import verification_gateway
         verification_gateway.validate_timeline(procedural_events, layout_assets=_layout_assets)

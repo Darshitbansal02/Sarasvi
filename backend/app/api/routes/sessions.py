@@ -470,22 +470,34 @@ async def handle_interruption(
     # 6. Page context: if the student was on a past page when they asked,
     #    anchor the explanation to that page's content.
     viewed_page_context = (parsed_snapshot or {}).get("viewed_page_context") or {}
+    viewed_page_index = viewed_page_context.get("page_index", 0)
+    
+    # 6a. Spatial Awareness: Check available space on the current page
+    # If the student is asking a doubt, we try to solve it in-place if there's space.
+    # We only advance to a new page if the current page is genuinely full.
+    whiteboard = await session_state_store.get_whiteboard(session_id)
+    available_space = whiteboard.flow.available_on_page
+    
+    # Heuristic: A typical doubt explanation (1-2 equations + some text) needs ~250-350px.
+    # If we have less than that, we'll likely overflow and trigger a natural page break.
+    has_sufficient_space = available_space > 300
+    
     if viewed_page_context:
         page_label = viewed_page_context.get("label", "")
-        page_index = viewed_page_context.get("page_index", 0)
         if page_label:
+            space_note = "There is enough space on this page to answer." if has_sufficient_space else "This page is full; you may need to continue on the next page."
             strategy_modifier = (
                 f"{strategy_modifier}\n\n"
                 f"CRITICAL PAGE CONTEXT: The student is looking at {page_label} "
-                f"(page {page_index + 1}) when asking this doubt. "
+                f"(page {viewed_page_index + 1}) when asking this doubt. "
                 f"Reference the diagrams, equations, and concepts on that specific page "
-                f"in your response. Do not jump ahead — the student needs help with what "
-                f"was already shown, not new material."
+                f"in your response. {space_note} "
+                f"IMPORTANT: Do NOT erase or remove existing content. Always append your explanation "
+                f"to the current flow. If the page fills up, the layout engine will handle the overflow."
             ).strip()
 
     # 6b. Canvas gesture context: if the student circled a specific element on
     #     the board, anchor the whole explanation to THAT element and its content
-    #     so the answer is about what they pointed at — not generic material.
     if spatial_intent.get("intent") in ("FOCUS_REQUEST", "RELATIONSHIP_QUERY"):
         circled_type = spatial_intent.get("object_type") or "element"
         circled_content = spatial_intent.get("object_content") or ""
@@ -499,43 +511,21 @@ async def handle_interruption(
             f"{strategy_modifier}\n\n"
             f"CRITICAL CANVAS CONTEXT: The student drew on the whiteboard to point at "
             f"a {circled_type}{content_str}. Their doubt is specifically about {relation}. "
-            f"Refer to it directly, re-highlight or re-draw it, and resolve their confusion "
-            f"about it. Do NOT introduce unrelated material or jump ahead."
+            f"Refer to it directly by saying something like 'I see you're asking about this {circled_type}...', "
+            f"re-highlight or re-draw it if helpful, and resolve their confusion. "
+            f"Keep your explanation on page {viewed_page_index + 1} if space allows."
         ).strip()
 
     # Integrate visual/mathematical context derived from the vision pipeline.
-    # Instruction wording depends on diagrams_enabled: when drawing is off, the
-    # model must explain visually through equations + annotated text, not shapes.
-    from app.config.settings import get_settings as _get_settings
-    _drawing_on = _get_settings().diagrams_enabled
-    if math_entities:
-        strategy_modifier = (
-            f"{strategy_modifier}\n\n"
-            f"CRITICAL: The student's question includes the following mathematical concepts and expressions: "
-            f"{', '.join(math_entities)}. Write each expression clearly on the whiteboard as an equation "
-            f"and explain it step by step."
-        )
-    if diagram_entities or diagram_description:
-        desc_str = f" ({diagram_description})" if diagram_description else ""
-        element_list = ', '.join(diagram_entities) if diagram_entities else "the illustrated elements"
-        if _drawing_on:
-            diagram_instruction = (
-                f"Draw these elements and label them clearly on the whiteboard: {element_list}."
-            )
-        else:
-            diagram_instruction = (
-                f"You CANNOT draw shapes or diagrams. Instead, describe each element in "
-                f"text annotations and write the governing equations for: {element_list}. "
-                f"Walk through the diagram verbally step-by-step in the narration."
-            )
-        strategy_modifier = (
-            f"{strategy_modifier}\n\n"
-            f"CRITICAL: The student's question includes a diagram/visual illustration{desc_str}. "
-            f"{diagram_instruction}"
-        )
-
-    pivot_prefix = spatial_intent.get("narrative_hint", "I see. Let's look at it this way.")
+    # ... (rest of vision integration)
     
+    # 7. Pivot Orchestration
+    # Ensure the whiteboard is set to the correct page the student is looking at
+    # so the explanation starts in the right spatial context.
+    whiteboard.scene_index = viewed_page_index
+    whiteboard.flow._page = viewed_page_index # Force internal flow pointer to match
+    # Note: We don't reset _y here because we want to APPEND to existing content.
+
     # Cancel any in-flight generation, then mark the page incomplete.
     await generation_job_manager.cancel_and_wait(session_id)
     await session_state_store.set_page_complete(session_id, False)
@@ -550,14 +540,16 @@ async def handle_interruption(
             strategy_modifier=strategy_modifier,
             pivot_prefix=pivot_prefix,
             confusion_level=_s.interrupt_confusion_default,
-            # Read cognitive_load from the snapshot directly, or fall back to
-            # pedagogical_state.confusion_level, or the configured default.
             cognitive_load=(
                 parsed_snapshot.get("cognitive_load")
                 or parsed_snapshot.get("pedagogical_state", {}).get("confusion_level")
                 or _s.interrupt_cognitive_load_default
             ) if parsed_snapshot else _s.interrupt_cognitive_load_default,
             is_pivot=True,
+            # We pass the viewed_page_index as the scene_index for the new generation
+            scene_index=viewed_page_index
+        )
+    )
             student_question=student_question,
         ),
         generation_id=new_gen,

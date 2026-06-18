@@ -148,7 +148,15 @@ export function resolveStrokeStateForRender(strokeIndex: number, stroke: StrokeE
     if (order < 0) return charState;
 
     const charDuration = Math.max(1, charState.endMs - charState.startMs);
-    const perStrokeDuration = charDuration / Math.max(1, siblingStrokes.length);
+    const perStrokeDuration =
+        Math.max(
+            60,
+            charDuration /
+            Math.max(
+                1,
+                siblingStrokes.length
+            )
+        );
     return {
       ...charState,
       type: "stroke",
@@ -181,22 +189,29 @@ export function clipPointsForReveal(
   if (!pts || pts.length < 2) return [];
   if (!cState) return pts;
 
-  const currentWordIdx = audioTimeline.getCurrentWordIndex();
-  if (currentWordIdx !== null && cState.wordBoundaryIndex !== undefined) {
-    if (currentWordIdx > cState.wordBoundaryIndex) return pts;
-    if (currentWordIdx < cState.wordBoundaryIndex) return [];
-  } else {
-    const endMs = cState.absoluteEndMs ?? cState.endMs;
-    if (currentTimeMs >= endMs) return pts;
-    const startMs = cState.absoluteStartMs ?? cState.startMs;
-    if (currentTimeMs < startMs) return [];
+  const startMs =
+      cState.absoluteStartMs ??
+      cState.startMs;
+
+  const endMs =
+      cState.absoluteEndMs ??
+      cState.endMs;
+
+  if (currentTimeMs < startMs) {
+      return [];
   }
 
-  const startMs = cState.absoluteStartMs ?? cState.startMs;
-  const endMs = cState.absoluteEndMs ?? cState.endMs;
+  if (currentTimeMs >= endMs) {
+      return pts;
+  }
+
   const localProgress = Math.min(
-    1,
-    Math.max(0, (currentTimeMs - startMs) / Math.max(1, endMs - startMs))
+      1,
+      Math.max(
+          0,
+          (currentTimeMs - startMs) /
+          Math.max(1, endMs - startMs)
+      )
   );
   const eased = localProgress * localProgress * (3 - 2 * localProgress);
   const totalPoints = pts.length;
@@ -241,13 +256,13 @@ export function shouldDrawStrokeForTiming(
   objStartMs: number
 ): boolean {
   if (charStates && charStates.length > 0) {
-    if (!cState) return false;
-    const currentWordIdx = audioTimeline.getCurrentWordIndex();
-    if (currentWordIdx !== null && cState.wordBoundaryIndex !== undefined) {
-      return currentWordIdx >= cState.wordBoundaryIndex;
-    }
-    const startMs = cState.absoluteStartMs ?? cState.startMs;
-    return currentTimeMs >= startMs;
+      if (!cState) return false;
+
+      const startMs =
+          cState.absoluteStartMs ??
+          cState.startMs;
+
+      return currentTimeMs >= startMs;
   }
   return currentTimeMs - objStartMs > 400;
 }
@@ -360,8 +375,19 @@ export function findCurrentWriteStroke(
     const cState = resolveStrokeTiming(strokeIndex, strokes, charStates, currentTimeMs);
     if (!cState) continue;
     const endMs = cState.absoluteEndMs ?? cState.endMs;
-    if (currentTimeMs <= endMs) {
-      return { strokeIndex, cState, orderIndex };
+    const startMs =
+        cState.absoluteStartMs ??
+        cState.startMs;
+
+    if (
+        currentTimeMs >= startMs &&
+        currentTimeMs <= endMs
+    ) {
+        return {
+            strokeIndex,
+            cState,
+            orderIndex
+        };
     }
   }
 
@@ -406,7 +432,7 @@ export function maxRevealOrderIndexAtTime(
 
     maxVisibleOrderIndex = orderIndex;
     const endMs = cState.absoluteEndMs ?? cState.endMs;
-    if (currentTimeMs < endMs) {
+    if (currentTimeMs < endMs + 25) {
       return maxVisibleOrderIndex;
     }
   }

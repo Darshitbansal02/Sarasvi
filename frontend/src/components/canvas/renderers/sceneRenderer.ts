@@ -512,24 +512,12 @@ export function renderCanvasScene(app: PIXI.Application, layers: Record<string, 
       // amount per frame, so the ink always grows smoothly from where it was — the
       // same idea as the clock's per-frame step clamp. Steady playback (target rises
       // ~1-3%/frame) is unaffected; only the initial catch-up is paced.
-      const revealMap: Map<string, number> =
-        ((globalThis as any).__strokeReveal ||= new Map());
-      const prevShown = revealMap.get(obj.id) ?? 0;
-      // Locked objects (preserved across generation boundary) show instantly.
-      // Past-window strokes snap only after they've already been substantially
-      // revealed — prevents a "popped full" first frame when batch-released from
-      // the audio gate. While catching up past the window, use a faster step
-      // (20%/frame ≈ 5 frames to full) so it still feels like a pen sweep.
       const lockedComplete = Boolean((obj as any)._lockedComplete);
-      const fullyDone = lockedComplete || (elapsed > dur + 200 && prevShown > 0.9);
-      let progress: number;
-      if (fullyDone) {
-        progress = 1;
-      } else {
-        const maxStep = elapsed > dur + 200 ? 0.20 : 0.07;
-        progress = Math.max(prevShown, Math.min(targetProgress, prevShown + maxStep));
-      }
-      revealMap.set(obj.id, progress);
+
+      const progress =
+          lockedComplete
+              ? 1
+              : targetProgress;
 
       const rawColor = deps.resolveHexColor(obj.data?.color, theme.stroke);
       const finalColor = (boardTheme === "light" && rawColor === 0xffffff) ? 0x000000 : rawColor;
@@ -693,7 +681,27 @@ export function renderCanvasScene(app: PIXI.Application, layers: Record<string, 
             // No handwritten strokes — char has no vector glyph. Render as
             // styled PIXI.Text (correct Unicode, matching color + font size).
             const isLocked = Boolean((obj as any)._lockedComplete);
-            const shouldShow = isLocked || charFinished;
+            const shouldShow =
+                isLocked ||
+                (
+                    charFinished &&
+                    currentTimeMs >
+                    Math.max(
+                        ...charStrokes.map(s => {
+                            const idx = strokes.indexOf(s);
+                            const cs =
+                                deps.resolveStrokeStateForRender(
+                                    idx,
+                                    s,
+                                    strokes,
+                                    charStates,
+                                    currentTimeMs
+                                );
+                            return cs?.endMs ?? 0;
+                        })
+                    ) + 80
+                );
+
             g.txt.visible = shouldShow;
             g.txt.alpha = shouldShow ? 0.92 : 0;
           } else {
@@ -733,7 +741,13 @@ export function renderCanvasScene(app: PIXI.Application, layers: Record<string, 
             eqRevMap.set(obj.id, revealOrder.length); // always fully revealed
           } else if (isWriteComplete && !isActiveWriter && charStates?.length) {
             const prev = eqRevMap.get(obj.id) ?? 0;
-            eqRevMap.set(obj.id, Math.min(revealOrder.length, prev + 3));
+            eqRevMap.set(
+                            obj.id,
+                            Math.min(
+                                revealOrder.length,
+                                prev + 2
+                            )
+                        );
           } else if (!isWriteComplete || isActiveWriter) {
             eqRevMap.delete(obj.id);
           }

@@ -99,6 +99,19 @@ class LocalEventBus(EventBusInterface):
                         channel=channel,
                         sub_id=subscription_id,
                     )
+                    # Clean up the worker and queue if no more subscribers exist on this channel
+                    if not subs:
+                        worker = self._workers.pop(channel, None)
+                        if worker:
+                            worker.cancel()
+                            try:
+                                await worker
+                            except asyncio.CancelledError:
+                                pass
+                            except Exception as e:
+                                logger.error("event_bus.worker_cleanup_error", channel=channel, error=str(e))
+                        self._queues.pop(channel, None)
+                        logger.info("event_bus.channel_cleaned", channel=channel)
                     return
 
     async def flush_channel(self, channel: str) -> None:

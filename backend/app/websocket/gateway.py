@@ -574,5 +574,7 @@ async def websocket_endpoint(
                 await session_state_store.save_managers(session_id)
                 session_state_store.evict(session_id)
                 logger.info("ws.session_cleanup", session_id=session_id)
+                import gc
+                gc.collect()
         except Exception as e:
             logger.error("ws.cleanup.session_finalize_error", session_id=session_id, error=str(e))

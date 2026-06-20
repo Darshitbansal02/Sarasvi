@@ -479,8 +479,9 @@ CRITICAL RULES:
 
 VISUAL TYPES:
 - "equation": { "latex": "LaTeX string", "board_id": "optional", "write_mode": "create" }
-  Use for ALL mathematical, physical, and chemical symbolic expressions — integrals, derivatives, Maxwell's equations, Schrödinger equation, thermodynamic relations, chemical equations (use \rightarrow, \rightleftharpoons, \Delta), matrix expressions, etc.
+  Use for ALL mathematical, physical, and chemical symbolic expressions — integrals, derivatives, Maxwell's equations, Schrödinger equation, thermodynamic relations, chemical equations (use \rightarrow, \rightleftharpoons; put a reaction condition above the arrow with \\xrightarrow{condition}, e.g. \\xrightarrow{\\Delta} for heat), matrix expressions, etc.
   Chemical equations example: { "latex": "CH_4 + 2O_2 \\rightarrow CO_2 + 2H_2O" }
+  Reaction with condition example: { "latex": "(NH_4)_2Cr_2O_7 \\xrightarrow{\\Delta} N_2 + Cr_2O_3 + 4H_2O" }
   Physics example: { "latex": "\\nabla \\times \\mathbf{E} = -\\frac{\\partial \\mathbf{B}}{\\partial t}" }
 - "annotation": { "text": "Key term or explanation text", "color": "silver|blue|cyan|amber|coral" }
   Use for conceptual labels, definitions, terminology, key facts (history dates, biological terms, physics constants).
@@ -623,6 +624,7 @@ Physics derivations — write EACH step as a separate "equation" visual:
   Electrostatics: F = k\\frac{q_1 q_2}{r^2}, V = \\frac{kq}{r}
 Chemistry — use LaTeX for ALL chemical notation:
   Reaction equations: CH_4 + 2O_2 \\rightarrow CO_2 + 2H_2O
+  Reactions with a condition (heat/catalyst) — put it above the arrow: (NH_4)_2Cr_2O_7 \\xrightarrow{\\Delta} N_2 + Cr_2O_3 + 4H_2O
   Equilibrium: N_2 + 3H_2 \\rightleftharpoons 2NH_3, K_{eq} = \\frac{[NH_3]^2}{[N_2][H_2]^3}
   Nernst equation: E = E^\\circ - \\frac{RT}{nF}\\ln Q
   Acid/base: pH = -\\log[H^+], pK_a = -\\log K_a
@@ -940,7 +942,7 @@ CRITICAL RULES:
 3. ALWAYS include at least one reasoning step with visual_type "equation" or "annotation" that WRITES new content on the whiteboard. The pen must write the explanation — never reply with only gestures or highlights. If the student circled content, you may additionally use 'equation_highlight' or 'teacher_gesture', but you must ALSO write new clarifying content with visual_type "equation" or "annotation".
 4. Keep the complexity tier strictly as 'trivial' or 'simple'.
 
-5. LATEX FORMATTING (CRITICAL): Always generate mathematically correct, standard LaTeX in `visual_data`. Never use raw text for math symbols (e.g., use \\sin, \\cos, \\tan, \\ln, \\log, \\pi, \\theta, \\alpha, \\beta, \\gamma, \\Delta, \\rightarrow, \\rightleftharpoons instead of raw text representations like sin, cos, tan, ln, log, pi, theta, alpha, beta, gamma, delta, ->, <=>). Keep all parentheses and braces balanced. Always double-escape backslashes correctly inside the JSON output (e.g., \\\\frac{a}{b}, \\\\sin, \\\\theta).
+5. LATEX FORMATTING (CRITICAL): Always generate mathematically correct, standard LaTeX in `visual_data`. Never use raw text for math symbols (e.g., use \\sin, \\cos, \\tan, \\ln, \\log, \\pi, \\theta, \\alpha, \\beta, \\gamma, \\Delta, \\rightarrow, \\rightleftharpoons instead of raw text representations like sin, cos, tan, ln, log, pi, theta, alpha, beta, gamma, delta, ->, <=>). For a reaction condition above the arrow use \\xrightarrow{\\Delta} (heat) or \\xrightarrow{cat}. Keep all parentheses and braces balanced. Always double-escape backslashes correctly inside the JSON output (e.g., \\\\frac{a}{b}, \\\\sin, \\\\theta).
 
 6. NARRATION NORMALIZATION (EXPRESSION-TO-SPEECH): Spoken narration MUST be natural human speech. NEVER leak raw LaTeX tokens (\\\\frac, \\\\sqrt, etc.), symbolic math markers, or OCR fragments into the `narration` field. For example, do not say "fraction x over two equals five". Say "x divided by two, equals five."
 

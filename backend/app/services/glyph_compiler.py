@@ -151,6 +151,24 @@ INVERSE_TRIG_OPS: dict[str, str] = {
     "\\arccoth": "coth",
 }
 
+# Extensible "stretchy" arrows: \xrightarrow[under]{over}, \xleftarrow{...}, etc.
+# These take an optional [under] and a (nominally mandatory) {over} label that is
+# drawn above the arrow, with the shaft stretched to span the label. They are NOT
+# in SYMBOL_MAP on purpose: a plain substitution would orphan the {...} label.
+# Value = arrowhead style consumed by _build_xarrow_strokes.
+XARROW_KINDS: dict[str, str] = {
+    "\\xrightarrow": "right",
+    "\\xRightarrow": "right",
+    "\\xleftarrow": "left",
+    "\\xLeftarrow": "left",
+    "\\xleftrightarrow": "both",
+    "\\xrightleftharpoons": "equilibrium",
+    "\\xleftrightharpoons": "equilibrium",
+    "\\xmapsto": "right",
+    "\\xhookrightarrow": "right",
+    "\\xhookleftarrow": "left",
+}
+
 # --- Smoothing and handwriting transforms ---
 
 def smooth_path(path: List[Tuple[float, float]], iterations: int = 2) -> List[Tuple[float, float]]:
@@ -668,6 +686,31 @@ class ASTParser:
                     node.sup = self.parse_base_node() or ASTNode('SEQUENCE')
                 return node
 
+            # ── Extensible arrows: \xrightarrow[under]{over}, \xleftarrow{…} ──
+            if cmd in XARROW_KINDS:
+                over = None
+                under = None
+                # optional [under] label — '[' / ']' tokenize as CHARs
+                while self.peek() and self.peek().type == 'SPACE':
+                    self.next_token()
+                if self.peek() and self.peek().type == 'CHAR' and self.peek().value == '[':
+                    self.next_token()  # consume '['
+                    kids = []
+                    while self.peek() and not (self.peek().type == 'CHAR' and self.peek().value == ']'):
+                        child = self.parse_node()
+                        if child:
+                            kids.append(child)
+                    if self.peek():
+                        self.next_token()  # consume ']'
+                    under = ASTNode('SEQUENCE', children=kids)
+                    while self.peek() and self.peek().type == 'SPACE':
+                        self.next_token()
+                # {over} label — only when explicitly braced, so a bare
+                # `\xrightarrow N_2` leaves N_2 as the following product, not a label
+                if self.peek() and self.peek().type == 'SPECIAL' and self.peek().value == '{':
+                    over = self.parse_node()
+                return ASTNode('XARROW', op=cmd, sup=over, sub=under)
+
             # ── Spacing commands → thin space ────────────────────────────────
             if cmd in ('\\,', '\\;', '\\:', '\\!', '\\enspace', '\\thinspace',
                        '\\medspace', '\\thickspace', '\\negthinspace'):
@@ -744,6 +787,50 @@ class LayoutBox:
 
 # --- AST Layout Engine ---
 
+def _build_xarrow_strokes(style: str, length: float, font_size: float) -> List[Dict[str, Any]]:
+    """Strokes for a stretchy arrow of the given pixel `length`, shaft on y=0.
+
+    Mirrors the proportions of the fixed "→"/"⇌" vector glyphs but with the
+    shaft stretched to span an arbitrary length so a label can sit above it.
+    """
+    th = max(2.0, font_size * 0.05)
+    hh = font_size * 0.13   # arrowhead half-height
+    hl = font_size * 0.20   # arrowhead length along the shaft
+
+    def stroke(pts: List[Tuple[float, float]]) -> Dict[str, Any]:
+        return {
+            "strokeId": f"xar_{uuid.uuid4().hex[:5]}",
+            "x1": pts[0][0], "y1": pts[0][1],
+            "x2": pts[-1][0], "y2": pts[-1][1],
+            "points": pts, "thickness": th,
+        }
+
+    if style == "left":
+        return [
+            stroke([(length, 0.0), (0.0, 0.0)]),
+            stroke([(hl, -hh), (0.0, 0.0), (hl, hh)]),
+        ]
+    if style == "both":
+        return [
+            stroke([(0.0, 0.0), (length, 0.0)]),
+            stroke([(hl, -hh), (0.0, 0.0), (hl, hh)]),
+            stroke([(length - hl, -hh), (length, 0.0), (length - hl, hh)]),
+        ]
+    if style == "equilibrium":
+        dy = font_size * 0.08
+        return [
+            stroke([(0.0, -dy), (length, -dy)]),                       # top shaft →
+            stroke([(length - hl, -dy - hh * 0.85), (length, -dy)]),   # top harpoon hook
+            stroke([(length, dy), (0.0, dy)]),                         # bottom shaft ←
+            stroke([(hl, dy + hh * 0.85), (0.0, dy)]),                 # bottom harpoon hook
+        ]
+    # default: rightward arrow
+    return [
+        stroke([(0.0, 0.0), (length, 0.0)]),
+        stroke([(length - hl, -hh), (length, 0.0), (length - hl, hh)]),
+    ]
+
+
 def layout_node(node: ASTNode, font_size: float) -> LayoutBox:
     # Inverse trig/hyperbolic: render as func^{-1}  (e.g. \arctan → tan⁻¹)
     if node.type == 'SYMBOL' and node.value in INVERSE_TRIG_OPS:
@@ -761,7 +848,19 @@ def layout_node(node: ASTNode, font_size: float) -> LayoutBox:
     if node.type in ['CHAR', 'SYMBOL']:
         char = node.value or ""
         if node.type == 'SYMBOL' and node.value:
-            char = SYMBOL_MAP.get(node.value, node.value)
+            mapped = SYMBOL_MAP.get(node.value)
+            if mapped is not None:
+                char = mapped
+            elif node.value.startswith('\\') and len(node.value) > 2 and node.value[1:].isalpha():
+                # Unknown alphabetic LaTeX command (any subject) that wasn't
+                # caught by SYMBOL_MAP / operators / XARROW etc. Degrade to its
+                # handwritten letters instead of leaking literal "\command" text
+                # (get_glyph has no stroke for "\command", so it would render as
+                # raw styled text). Universal graceful fallback, not per-symbol.
+                letters = [ASTNode('CHAR', value=c) for c in node.value[1:]]
+                return layout_node(ASTNode('SEQUENCE', children=letters), font_size)
+            else:
+                char = node.value
 
         is_large_op = char in ["∫", "∑"]
         char_font_size = font_size * 1.3 if is_large_op else font_size
@@ -1767,6 +1866,50 @@ def layout_node(node: ASTNode, font_size: float) -> LayoutBox:
                             "index": step["index"]+g0 if step["type"]=="glyph" else step["index"]+s0})
             tot_asc = -(ly - lbl.ascent)
         return LayoutBox(w, tot_asc + c_lay.descent, tot_asc, c_lay.descent, glyphs, strokes, seq)
+
+    # ── XARROW: stretchy arrow with optional over/under labels ───────────────
+    if node.type == 'XARROW':
+        style = XARROW_KINDS.get(node.op or "", "right")
+        lbl_fs = font_size * 0.55
+        over = layout_node(node.sup, lbl_fs) if node.sup else None
+        under = layout_node(node.sub, lbl_fs) if node.sub else None
+        side_pad = font_size * 0.30
+        lbl_w = max(over.width if over else 0.0, under.width if under else 0.0)
+        length = max(font_size * 1.7, lbl_w + 2 * side_pad)
+
+        strokes = _build_xarrow_strokes(style, length, font_size)
+        glyphs: List[Dict[str, Any]] = []
+        seq: List[Dict[str, Any]] = [{"type": "stroke", "index": i} for i in range(len(strokes))]
+        shaft_extent = font_size * 0.21  # half-height of arrowhead + equilibrium offset
+        asc = shaft_extent
+        desc = shaft_extent
+
+        def _merge(sub: LayoutBox, dx: float, dy: float) -> None:
+            g0, s0 = len(glyphs), len(strokes)
+            for g in sub.glyphs:
+                glyphs.append({**g, "scaledX": g["scaledX"] + dx, "scaledY": g["scaledY"] + dy})
+            for s in sub.strokes:
+                strokes.append({
+                    **s,
+                    "x1": s["x1"] + dx, "y1": s["y1"] + dy,
+                    "x2": s["x2"] + dx, "y2": s["y2"] + dy,
+                    "points": [(p[0] + dx, p[1] + dy) for p in s["points"]] if s.get("points") else None,
+                    "charIndex": s["charIndex"] + g0 if s.get("charIndex") is not None else None,
+                })
+            for step in (sub.constructionSequence or []):
+                strokes_off = g0 if step["type"] == "glyph" else s0
+                seq.append({"type": step["type"], "index": step["index"] + strokes_off})
+
+        if over:
+            oy = -shaft_extent - font_size * 0.10 - over.descent
+            _merge(over, (length - over.width) / 2.0, oy)
+            asc = max(asc, -(oy - over.ascent))
+        if under:
+            uy = shaft_extent + font_size * 0.10 + under.ascent
+            _merge(under, (length - under.width) / 2.0, uy)
+            desc = max(desc, uy + under.descent)
+
+        return LayoutBox(length, asc + desc, asc, desc, glyphs, strokes, seq)
 
     # ── Invisible bracket sentinel (from \left. / \right.) ───────────────────
     if node.type == 'CHAR' and node.value == '\x00':

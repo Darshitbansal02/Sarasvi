@@ -157,22 +157,6 @@ export default function TermsPage() {
               terms.
             </p>
           </section>
-
-          {/* 6 */}
-          <section>
-            <h2 className="text-base font-semibold text-white mb-3">6. Contact</h2>
-            <p>
-              For questions about these terms, your data, or to report incorrect AI-generated
-              content, contact us at{" "}
-              <a
-                href="mailto:support@sarasvi.ai"
-                className="text-[#F9A01B] hover:underline"
-              >
-                support@sarasvi.ai
-              </a>
-              .
-            </p>
-          </section>
         </div>
 
         {/* Footer CTA */}

@@ -224,7 +224,14 @@ export default function Dashboard() {
     if (!hasHydrated) return;
     if (!user) { router.push("/welcome"); return; }
     let mounted = true;
-    getUser(user.id).catch(() => { logout(); router.push("/welcome"); });
+    getUser(user.id).catch((err) => {
+      if (err instanceof Error && (err.message.includes("401") || err.message.includes("403") || err.message.includes("404"))) {
+        logout();
+        router.push("/welcome");
+      } else {
+        console.warn("Transient error checking user session:", err);
+      }
+    });
     getSessions(user.id).then((resp) => {
       if (mounted) {
         setSessions((resp.sessions || []).map((s: any) => ({ ...s, status: String(s.status || "CREATED").toUpperCase() })));

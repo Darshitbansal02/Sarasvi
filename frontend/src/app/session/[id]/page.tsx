@@ -28,6 +28,7 @@ import {
   X,
   Loader2,
   MessageSquare,
+  Check,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import dynamic from "next/dynamic";
@@ -52,6 +53,7 @@ import {
   RUNTIME_STATES,
 } from "@/runtime/runtimeStore";
 import { sceneManager } from "@/runtime/sceneManager";
+import { PAGE_W } from "@/runtime/boardConstants";
 import { toast } from "sonner";
 import { MotionWSClient } from "@/lib/wsClient";
 import { interruptSession, teachTopic, sendInteractionSignal } from "@/lib/api_sessions";
@@ -70,12 +72,20 @@ function ElapsedTimer({ startedAt, isRunning }: { startedAt: number; isRunning: 
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
+    setElapsed(0);
+  }, [startedAt]);
+
+  useEffect(() => {
     if (!isRunning) return;
+    let lastTick = Date.now();
     const timerId = setInterval(() => {
-      setElapsed(Date.now() - startedAt);
-    }, 500);
+      const now = Date.now();
+      const delta = now - lastTick;
+      lastTick = now;
+      setElapsed((prev) => prev + delta);
+    }, 100);
     return () => clearInterval(timerId);
-  }, [isRunning, startedAt]);
+  }, [isRunning]);
 
   const elapsedSec = Math.floor(elapsed / 1000);
   const elapsedMin = Math.floor(elapsedSec / 60);
@@ -191,6 +201,21 @@ export default function LiveSession() {
     }
   }, [lastStudentGesture]);
 
+  // Pause/Resume playback based on doubt modal visibility
+  useEffect(() => {
+    const store = useRuntimeStore.getState();
+    if (showInterruptModal) {
+      if (store.runtimeState === RUNTIME_STATES.STREAMING) {
+        store.togglePlayback();
+      }
+    } else {
+      // Modal closed (not by submitting, because submitting sets state to INTERRUPTING)
+      if (store.runtimeState === RUNTIME_STATES.PAUSED) {
+        store.togglePlayback();
+      }
+    }
+  }, [showInterruptModal]);
+
   const canvasElement = useMemo(() => <PixiCanvas />, []);
 
   const initAudio = useCallback(async () => {
@@ -210,6 +235,14 @@ export default function LiveSession() {
   useEffect(() => {
     initAudio();
   }, [initAudio]);
+
+  // Synchronize muted and volume changes with the TTS volume in the runtime store
+  useEffect(() => {
+    const store = useRuntimeStore.getState();
+    if ('setTTSVolume' in store && typeof store.setTTSVolume === 'function') {
+      (store.setTTSVolume as (v: number) => void)(muted ? 0 : volume[0] / 100);
+    }
+  }, [muted, volume]);
 
   useEffect(() => {
     const resumeAudio = async () => {
@@ -341,6 +374,7 @@ export default function LiveSession() {
       const viewedScene = store.scenes.find((sc: any) => sc.scene_id === viewedSceneId);
       const viewedPageContext = viewedScene
         ? {
+          scene_id: viewedSceneId,
           label: viewedScene.label,
           page_index: store.scenes.findIndex((sc: any) => sc.scene_id === viewedSceneId),
           concept: viewedScene.concept,
@@ -352,6 +386,9 @@ export default function LiveSession() {
         (s: any) => (s.sceneId || "scene_0") === viewedSceneId
       );
 
+      const viewedPageIndex = parseInt(viewedSceneId.split("_")[1]) || 0;
+      const pageOffset = viewedPageIndex * PAGE_W;
+
       // Downsample coordinates to prevent token bloat
       const processedStrokes = currentStrokes.map((s: any) => {
         const path = s.path || [];
@@ -361,9 +398,12 @@ export default function LiveSession() {
           downsampledPath.push(path[path.length - 1]);
         }
 
-        // Compute bounding box
+        // Offset path by pageOffset
+        const absolutePath = downsampledPath.map(([x, y]: [number, number]) => [x + pageOffset, y]);
+
+        // Compute bounding box using absolute path
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        path.forEach(([x, y]: [number, number]) => {
+        absolutePath.forEach(([x, y]: [number, number]) => {
           if (x < minX) minX = x;
           if (x > maxX) maxX = x;
           if (y < minY) minY = y;
@@ -373,7 +413,7 @@ export default function LiveSession() {
         return {
           id: s.id,
           color: s.color,
-          path: downsampledPath,
+          path: absolutePath,
           bounds: minX !== Infinity ? { minX, maxX, minY, maxY } : null,
         };
       });
@@ -393,7 +433,7 @@ export default function LiveSession() {
         text,
         gesture || undefined,
         snapshot || undefined,
-        null,
+        viewedPageContext,
         attachedFile
       );
 
@@ -468,6 +508,13 @@ export default function LiveSession() {
   const totalPages = Math.max(1, scenes.length);
   const currentPage = Math.max(1, currentPageIndex + 1);
   const isRunning = runtimeState === RUNTIME_STATES.STREAMING;
+  // Timer should keep ticking during doubt flow (INTERRUPTING/REMEDIATING)
+  // but stop on COMPLETED, PAUSED, ERROR, IDLE.
+  const isTimerActive =
+    runtimeState === RUNTIME_STATES.STREAMING ||
+    runtimeState === RUNTIME_STATES.INTERRUPTING ||
+    runtimeState === RUNTIME_STATES.REMEDIATING ||
+    runtimeState === RUNTIME_STATES.BUFFERING;
 
   return (
     <div
@@ -476,6 +523,7 @@ export default function LiveSession() {
     >
       {runtimeState !== RUNTIME_STATES.ERROR && (
         <GeneratingSessionLoader
+          key={id}
           topic={topic}
           language={lang}
           sessionId={id}
@@ -665,7 +713,7 @@ export default function LiveSession() {
 
             <button
               onClick={() => {
-                const xTarget = currentPageIndex * 1200;
+                const xTarget = currentPageIndex * PAGE_W;
                 useRuntimeStore.setState({ camera: { x: xTarget, y: 0, zoom: 1 } });
                 toast.info("Camera reset");
               }}
@@ -678,19 +726,30 @@ export default function LiveSession() {
             <div className="w-px h-5 bg-border mx-0.5" />
 
             {/* Play/Pause + Timer */}
-            <button
-              onClick={() => useRuntimeStore.getState().togglePlayback()}
-              className={cn(
-                "h-8 px-3 rounded-sm flex items-center justify-center gap-1.5 text-[10px] font-mono font-bold tracking-wider transition-all duration-150",
-                isRunning
-                  ? "text-foreground hover:bg-muted hover:text-foreground"
-                  : "text-primary hover:bg-primary/10"
-              )}
-              title={isRunning ? "Pause" : "Resume"}
-            >
-              {isRunning ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-              <span>{isRunning ? "LIVE" : "PAUSED"}</span>
-            </button>
+            {runtimeState === RUNTIME_STATES.COMPLETED ? (
+              <button
+                disabled
+                className="h-8 px-3 rounded-sm flex items-center justify-center gap-1.5 text-[10px] font-mono font-bold tracking-wider text-green-500 bg-green-500/10 cursor-not-allowed opacity-90 border border-green-500/20"
+                title="Lesson Completed"
+              >
+                <Check className="h-3.5 w-3.5" />
+                <span>COMPLETED</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => useRuntimeStore.getState().togglePlayback()}
+                className={cn(
+                  "h-8 px-3 rounded-sm flex items-center justify-center gap-1.5 text-[10px] font-mono font-bold tracking-wider transition-all duration-150",
+                  isRunning
+                    ? "text-foreground hover:bg-muted hover:text-foreground"
+                    : "text-primary hover:bg-primary/10"
+                )}
+                title={isRunning ? "Pause" : "Resume"}
+              >
+                {isRunning ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+                <span>{isRunning ? "LIVE" : "PAUSED"}</span>
+              </button>
+            )}
 
             <div className="w-px h-5 bg-border mx-0.5" />
 
@@ -706,7 +765,7 @@ export default function LiveSession() {
 
             <div className="lg:hidden w-px h-5 bg-border mx-0.5" />
 
-            <ElapsedTimer startedAt={startedAtRef.current} isRunning={isRunning} />
+            <ElapsedTimer startedAt={startedAtRef.current} isRunning={isTimerActive} />
           </div>
 
         </div>

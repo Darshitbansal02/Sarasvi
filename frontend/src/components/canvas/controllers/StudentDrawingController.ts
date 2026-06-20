@@ -223,7 +223,23 @@ export class StudentDrawingController {
         const gesture = gestureEngine.analyzeStroke(points);
         if (gesture.type === GestureType.CIRCLE) {
           const storeState = useRuntimeStore.getState();
-          const targetId = gestureEngine.findTarget(gesture, storeState.sceneObjects as any);
+          const viewedSceneId = storeState.viewedSceneId || storeState.activeSceneId || "scene_0";
+          const viewedPageIndex = parseInt(viewedSceneId.split("_")[1]) || 0;
+          const pageOffset = viewedPageIndex * this._boardWidth;
+
+          const absoluteGesture = {
+            ...gesture,
+            bounds: gesture.bounds ? {
+              ...gesture.bounds,
+              x: gesture.bounds.x + pageOffset,
+            } : undefined,
+            center: gesture.center ? {
+              ...gesture.center,
+              x: gesture.center.x + pageOffset,
+            } : undefined,
+          };
+
+          const targetId = gestureEngine.findTarget(absoluteGesture as any, storeState.sceneObjects as any);
           const targetObj = targetId ? storeState.sceneObjects[targetId] : null;
 
           // Always set lastStudentGesture when a circle is detected — even when
@@ -234,9 +250,9 @@ export class StudentDrawingController {
               type: "circle",
               target_id: targetId || null,
               target_type: targetObj?.type || "area",
-              // Pass gesture bounds so the modal can say "about this region"
-              bounds: gesture.bounds || null,
-              center: gesture.center || null,
+              // Pass absolute gesture bounds so the modal can say "about this region"
+              bounds: absoluteGesture.bounds || null,
+              center: absoluteGesture.center || null,
             }
           });
 

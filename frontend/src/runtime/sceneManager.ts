@@ -7,6 +7,7 @@
  */
 
 import { useRuntimeStore } from "./runtimeStore";
+import { PAGE_W } from "./boardConstants";
 
 // ── In-memory snapshot store ─────────────────────────────────────
 // Key: scene_id  →  Value: full snapshot object
@@ -85,7 +86,7 @@ export class SceneManager {
       concept: pedagogicalState.active_concept,
       confusion_level: pedagogicalState.confusion_level || 0,
       timeline_offset: store.currentTimeMs,
-      camera_x: store.scenes.length * 1200,  // PAGE_W = 1200
+      camera_x: store.scenes.length * PAGE_W,
     });
 
     return this.currentSceneId;

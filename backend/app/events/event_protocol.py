@@ -126,6 +126,7 @@ class EventType(str, Enum):
     COGNITIVE_PAUSE = "cognitive_pause"
     ATTENTION_FOCUS = "attention_focus"
     NARRATION_SYNC = "narration_sync"
+    NARRATION_BLOCK = "narration_block"
     TEACHER_GESTURE = "teacher_gesture"
     MOTOR_SEQUENCE = "motor_sequence"
     GESTURE_EMPHASIS = "gesture_emphasis"
@@ -139,6 +140,7 @@ class EventType(str, Enum):
     # ── Universal Procedural Sketching ───────────────────────────
     PROCEDURAL_SKETCH = "procedural_sketch"
     SCENE_START = "scene_start"
+    SCENE_END = "scene_end"
 
     # ── Timeline Markers ─────────────────────────────────────────
     TIMELINE_MARKER = "timeline_marker"
@@ -165,8 +167,9 @@ class EventType(str, Enum):
     STROKE_REVEAL = "stroke_reveal"
     GESTURE = "gesture"
     SPEECH_PAUSE = "speech_pause"
-    SCENE_END = "scene_end"
     STROKE = "stroke"
+    FOCUS_START = "focus_start"
+    FOCUS_END = "focus_end"
 
 
 # ── Specific Payload Schemas ─────────────────────────────────────
@@ -248,7 +251,7 @@ class ComplexityLabelPayload(BaseModel):
 class SpeechPayload(BaseModel):
     """Payload for speech events."""
     text: str
-    voice: str = "en-US-AriaNeural"
+    voice: str = "en-IN-NeerjaNeural"
     emotion: Optional[str] = None
     pace: str = "normal"  # slow, normal, fast
     audio_data: Optional[str] = None

@@ -30,6 +30,7 @@ from app.agents.domain_agents import DomainAwareExplainer
 from app.config.settings import get_settings
 from app.events.event_bus import get_event_bus
 from app.events.event_protocol import TimelineEventData, EventType
+from app.layouts.document_flow import PAGE_W
 from app.orchestration.live_cognitive_loop import LiveCognitiveLoop
 from app.services.lesson_conversion import semantic_primitives_to_dsl_instructions
 from app.services.plan_exceptions import PlanRejectedError
@@ -139,7 +140,7 @@ async def _synthesize_speech_event(event: dict, voice: Optional[str] = None) -> 
     import edge_tts
     settings = get_settings()
     if not voice:
-        voice = settings.tts_voice or "en-US-AriaNeural"
+        voice = settings.tts_voice or "en-IN-NeerjaNeural"
     # The compiler stores the ESTIMATED narration length under "duration_ms"
     # (audio_planner). Read it here so the (real − estimated) delta is non-zero
     # and the caller can shift later events onto the real audio timeline.
@@ -369,6 +370,7 @@ class LessonGenerationService:
     # ── Orchestration ────────────────────────────────────────────────
     async def run(self) -> None:
         """Unifies generation + streaming for both initial lessons and pivots."""
+        import asyncio
         from app.database.engine import get_session_factory
         from sqlalchemy import select
         from app.models.user import User
@@ -387,16 +389,30 @@ class LessonGenerationService:
                 self.user = user
 
                 try:
-                    await self._plan()
-                except PlanRejectedError as exc:
-                    await _emit_plan_rejection(self.session_id, self.generation_id, exc)
-                    return
+                    try:
+                        await self._plan()
+                    except PlanRejectedError as exc:
+                        await _emit_plan_rejection(self.session_id, self.generation_id, exc)
+                        return
 
-                self._compile()
-                await self._synthesize_tts()
-                await self._reconcile()
-                await self._publish()
-                await self._finalize()
+                    self._compile()
+                    await self._synthesize_tts()
+                    await self._reconcile()
+                    await self._publish()
+                    await self._finalize()
+                except asyncio.CancelledError:
+                    # G1 was interrupted mid-generation (student asked a doubt).
+                    # Persist the whiteboard cursor reached so far so G2 can
+                    # continue appending below G1's last written item instead of
+                    # restarting from the top of the page.
+                    if self.whiteboard is not None:
+                        try:
+                            await session_state_store.save_whiteboard_obj(
+                                self.session_id, self.whiteboard
+                            )
+                        except Exception:
+                            pass
+                    raise
 
     # ── Phase: plan ──────────────────────────────────────────────────
     async def _plan(self) -> None:
@@ -435,10 +451,6 @@ class LessonGenerationService:
             adaptation_context=adaptation_context,
         )
 
-        # semantic_primitives already built by pipeline; ensure narration pivot prefix
-        if self.pivot_prefix and lesson.get("narration"):
-            lesson["narration"] = f"{self.pivot_prefix} {lesson['narration']}"
-
         semantic_primitives = lesson.get("semantic_primitives", [])
 
         # 2. Convert to DSL instructions (logs drops instead of silent skip)
@@ -452,26 +464,30 @@ class LessonGenerationService:
         # 3. Render Stream
         whiteboard = await session_state_store.get_whiteboard(session_id)
 
-        # Resolve the active scene index from the student's snapshot if available
+        # Resolve the active scene index from the student's snapshot if available.
         scene_index = whiteboard.scene_index
-        if self.snapshot:
+        # For pivots (doubt answers) the whiteboard cursor + page were already
+        # anchored to G1's exact interruption point in handle_interruption
+        # (reconstruct_interrupted_whiteboard_cursors). The student's live camera_x
+        # often reads page 0 even when the pen stopped on a later page, so honouring
+        # it here would drag the doubt back to the wrong page and force a spurious
+        # proactive_page_break — desyncing the doubt from the auto-resume shift
+        # baseline and causing overlap. Trust the interruption anchor instead.
+        if self.snapshot and not self.is_pivot:
             camera_state = self.snapshot.get("camera_state", {})
             if isinstance(camera_state, dict) and "x" in camera_state:
                 try:
                     camera_x = float(camera_state["x"])
-                    scene_index = int(round(camera_x / 1200.0))
+                    scene_index = int(round(camera_x / PAGE_W))
                     # Align whiteboard's index for drawing coordinates positioning
                     whiteboard.scene_index = scene_index
                 except (ValueError, TypeError):
                     pass
 
-        # Advance to the next page for pivots so topic shifts always start cleanly.
-        # But if is_pivot is True, we want to stay on the same page where the student asked their question/doubt
-        # so the explanation happens in-place and preserves existing whiteboard context.
+        # For both pivots and fresh lessons the whiteboard cursor is already
+        # positioned correctly above (snapshot camera_x → restore_page).
+        # No further scene_index override is needed here.
         delete_events = []
-        if self.is_pivot:
-            # Keep on the same page
-            whiteboard.scene_index = scene_index
 
         # Check if any instruction requires simulation
         has_sim = any(instr.primitive_type.value == "simulation_start" for instr in semantic_instructions)
@@ -674,9 +690,9 @@ class LessonGenerationService:
         voice_mapping = {
             "hi-IN": "hi-IN-SwaraNeural",
             "hinglish": "en-IN-NeerjaNeural",
-            "en-US": "en-US-AriaNeural"
+            "en-US": "en-IN-NeerjaNeural"
         }
-        selected_voice = voice_mapping.get(language, "en-US-AriaNeural")
+        selected_voice = voice_mapping.get(language, "en-IN-NeerjaNeural")
 
         # Synthesize ALL speech audio CONCURRENTLY (bounded). edge-tts is network
         # I/O, so this collapses N sequential ~1s syntheses into ~max(one call)
@@ -834,7 +850,13 @@ class LessonGenerationService:
             published.setdefault("event_id", f"{generation_id}:{i}")
             await event_bus.publish(f"session:{session_id}", published)
 
-        final_start_ms = procedural_events[-1]["start_ms"] + 2000 if procedural_events else 0
+        max_end_ms = 0
+        for event in procedural_events:
+            evt_start = event.get("start_ms", 0)
+            evt_dur = (event.get("payload") or {}).get("duration_ms") or 0
+            if evt_start + evt_dur > max_end_ms:
+                max_end_ms = evt_start + evt_dur
+        final_start_ms = max_end_ms + 2000 if procedural_events else 0
         end_event = TimelineEventData(
             generation_id=generation_id,
             sequence_number=len(procedural_events),
@@ -853,11 +875,20 @@ class LessonGenerationService:
             end_event.model_dump(),
         )
 
+        # Record playback duration in the transient slot so that _guarded_teaching
+        # can sleep for this long before launching G3, ensuring G2's audio finishes
+        # before a new generation_start arrives and calls ttsPlayer.stop().
+        if self.is_pivot:
+            session_state_store.save_pivot_playback_ms(str(session_id), final_start_ms)
+
     # ── Phase: finalize ──────────────────────────────────────────────
     async def _finalize(self) -> None:
-        # Persist durable state at the generation boundary.
+        # Save whiteboard FIRST using the direct object reference.
+        # set_page_complete() below calls _upsert() which evicts the cache slot;
+        # if we called save_whiteboard() (cache-based) after that, it would find
+        # the slot empty and skip the write, leaving whiteboard_state stale.
+        await session_state_store.save_whiteboard_obj(self.session_id, self.whiteboard)
         await session_state_store.set_page_complete(self.session_id, True, page=self.scene_index, increment=True)
-        await session_state_store.save_whiteboard(self.session_id)
         await self.tracker.persist(str(self.session_id))
 
         logger.info(

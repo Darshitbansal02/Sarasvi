@@ -41,6 +41,11 @@ def _default_page_lock() -> dict:
 class SessionStateStore:
     def __init__(self) -> None:
         self._cache: dict[str, dict[str, Any]] = {}
+        # _transient holds purely in-process state that must NOT be cleared by
+        # evict() / _upsert().  pending_resume lives here so that a save_whiteboard
+        # call during G2's _finalize doesn't silently wipe it before _auto_resume_lesson
+        # can read it.
+        self._transient: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
 
     # ── in-process cache (sync) ──────────────────────────────────────
@@ -48,12 +53,19 @@ class SessionStateStore:
         with self._lock:
             return self._cache.setdefault(str(session_id), {})
 
+    def _tslot(self, session_id: str) -> dict[str, Any]:
+        """Return the transient (non-evictable) slot for this session."""
+        with self._lock:
+            return self._transient.setdefault(str(session_id), {})
+
     def evict(self, session_id: str) -> None:
+        """Evict DB-backed cache for this session. Transient state is preserved."""
         with self._lock:
             self._cache.pop(str(session_id), None)
 
     # ── DB helpers ───────────────────────────────────────────────────
-    async def _load_row(self, session_id: str) -> Optional[SessionState]:
+    async def _load_row(self, session_id: str, force_refresh: bool = False) -> Optional[SessionState]:
+        """Load session state from DB, optionally bypassing cache in the caller."""
         sid = uuid.UUID(str(session_id))
         factory = get_session_factory()
         async with factory() as db:
@@ -81,6 +93,13 @@ class SessionStateStore:
             for key, value in fields.items():
                 setattr(row, key, value)
             await db.commit()
+            
+            # Gap 2 Fix: Clear local cache slot on write to ensure subsequent
+            # reads (even on the same instance) reload the latest serialized DB state.
+            # This is the "safe" middle-ground before implementing a full Pub/Sub bus.
+            self.evict(session_id)
+
+    # ── page lock (DB-authoritative; tiny, no cache) ─────────────────
 
     # ── page lock (DB-authoritative; tiny, no cache) ─────────────────
     async def get_page_lock(self, session_id: str) -> dict:
@@ -122,6 +141,16 @@ class SessionStateStore:
         if wb is not None:
             await self._upsert(session_id, whiteboard_state=wb.to_state())
 
+    async def save_whiteboard_obj(self, session_id: str, wb: "WhiteboardManager") -> None:
+        """Save a whiteboard object directly, bypassing the cache lookup.
+
+        Use this instead of save_whiteboard() whenever the caller holds the
+        whiteboard reference directly — e.g. inside _finalize() where
+        set_page_complete() may have already evicted the cache slot.
+        """
+        if wb is not None:
+            await self._upsert(session_id, whiteboard_state=wb.to_state())
+
     # ── generation / branch managers ─────────────────────────────────
     async def get_managers(self, session_id: str) -> dict[str, Any]:
         """Return {'generation': GenerationManager, 'branch': BranchManager},
@@ -153,6 +182,39 @@ class SessionStateStore:
             fields["branch_state"] = br.to_state()
         if fields:
             await self._upsert(session_id, **fields)
+
+    # ── pending lesson resume (in-memory; lives between /interrupt and doubt-end) ──
+    # Stores the original generation's id + playback offset so that after the
+    # doubt pivot completes, _auto_resume_lesson can replay the remaining events
+    # without a second LLM call.
+    def save_pending_resume(
+        self,
+        session_id: str,
+        generation_id: str,
+        interrupted_at_ms: float,
+        branch_id: str = "main",
+    ) -> None:
+        self._tslot(session_id)["pending_resume"] = {
+            "generation_id": generation_id,
+            "interrupted_at_ms": float(interrupted_at_ms),
+            "branch_id": branch_id,
+        }
+
+    def get_pending_resume(self, session_id: str) -> Optional[dict]:
+        return self._tslot(session_id).get("pending_resume")
+
+    def clear_pending_resume(self, session_id: str) -> None:
+        self._tslot(session_id).pop("pending_resume", None)
+
+    # ── pivot playback duration (in-memory; used to delay G3 until G2 is done) ──
+    def save_pivot_playback_ms(self, session_id: str, ms: float) -> None:
+        """Record how long the just-published pivot (G2) generation will play.
+        Read by _guarded_teaching to delay G3 until G2's audio finishes."""
+        self._tslot(session_id)["pivot_playback_ms"] = float(ms)
+
+    def pop_pivot_playback_ms(self, session_id: str) -> float:
+        """Return and clear the stored pivot playback duration (0.0 if not set)."""
+        return float(self._tslot(session_id).pop("pivot_playback_ms", 0.0))
 
     # ── student profile cache (sync access for CognitiveTracker) ─────
     def profile_slot(self, session_id: str) -> dict[str, Any]:

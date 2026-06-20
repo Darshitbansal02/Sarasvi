@@ -81,9 +81,10 @@ export function resolveSceneObjectBoardId(obj: {
 }
 
 export function shouldHideSupersededBoardObject(
-  obj: { id: string; _boardId?: string; data?: Record<string, any>; _mergedLatex?: string },
+  obj: { id: string; _boardId?: string; data?: Record<string, any>; _mergedLatex?: string; _lockedComplete?: boolean },
   sceneObjects: Record<string, { id?: string; _boardStepIds?: string[]; _mergedLatex?: string }>
 ): boolean {
+  if (obj._lockedComplete) return false;
   if (obj._mergedLatex) return false;
   const boardId = resolveSceneObjectBoardId(obj);
   if (!boardId || obj.id === boardId) return false;
@@ -106,6 +107,7 @@ export function pruneSupersededBoardObjects(
   for (const key of Object.keys(sceneObjects)) {
     if (key === boardId) continue;
     const obj = sceneObjects[key];
+    if (obj && obj._lockedComplete) continue;
     
     // Playback guard: if object is still in its animation window, do not prune it yet
     if (currentTimeMs !== undefined && typeof obj.startMs === 'number') {

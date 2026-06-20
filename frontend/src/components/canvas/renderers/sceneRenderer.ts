@@ -3,6 +3,7 @@ import type { MutableRefObject } from "react";
 import { audioTimeline } from "@/runtime/audio/audioTimeline";
 import { cleanLatexToMath, GlyphMetadata, StrokeEntry } from "@/runtime/motion/glyphLayoutEngine";
 import { useRuntimeStore } from "@/runtime/runtimeStore";
+import { PAGE_W } from "@/runtime/boardConstants";
 import { drawInkPhysicsRibbon, renderMotionStroke } from "./inkPhysics";
 import { collectWhiteboardAuditFindings, reportWhiteboardAuditFindings } from "@/runtime/motion/whiteboardAudit";
 import {
@@ -63,7 +64,7 @@ export function renderCanvasScene(app: PIXI.Application, layers: Record<string, 
   const viewedSceneId = state.viewedSceneId || activeSceneId;
   const isLive = (viewedSceneId === activeSceneId);
   const viewedPageIndex = parseInt(viewedSceneId.split("_")[1]) || 0;
-  const viewedXOffset = viewedPageIndex * 1200;  // PAGE_W = 1200
+  const viewedXOffset = viewedPageIndex * PAGE_W;
   const xOffset = viewedXOffset;
 
   const currentTimeMs = (audioTimeline.state === "playing")
@@ -284,7 +285,13 @@ export function renderCanvasScene(app: PIXI.Application, layers: Record<string, 
       const constr = Reflect.get(nodeConst, obj.id) || { startMs: currentTimeMs };
       const elapsed = currentTimeMs - constr.startMs;
       const NODE_DRAW_MS = 700;
-      const progress = Math.min(1, Math.max(0, elapsed / NODE_DRAW_MS));
+      // Nodes carried across a generation boundary (doubt pivot) are _lockedComplete:
+      // the clock resets to 0, which would make `elapsed` negative and reset the node
+      // construction to 0% — making the already-drawn node and its label flicker
+      // (disappear, then redraw). Force locked nodes to full progress so prior content
+      // stays on the board while the doubt is answered.
+      const nodeLocked = Boolean((obj as any)._lockedComplete);
+      const progress = nodeLocked ? 1 : Math.min(1, Math.max(0, elapsed / NODE_DRAW_MS));
 
       const focusIntensity = isFocused
         ? (focusState?.activeEffects?.find((e: any) => e.targetIds?.includes(obj.id))?.intensity || 0.6)
@@ -363,8 +370,9 @@ export function renderCanvasScene(app: PIXI.Application, layers: Record<string, 
           const j = revealOrder[orderIdx]!;
           const s = strokes.at(j);
           if (!s) continue;
-          const cState = deps.resolveStrokeStateForRender(j, s, strokes, charStates, currentTimeMs);
-          if (!deps.shouldDrawStrokeForTiming(cState, charStates, currentTimeMs, obj.startMs || 0)) continue;
+          const isLocked = Boolean((obj as any)._lockedComplete);
+          const cState = isLocked ? null : deps.resolveStrokeStateForRender(j, s, strokes, charStates, currentTimeMs);
+          if (!isLocked && !deps.shouldDrawStrokeForTiming(cState, charStates, currentTimeMs, obj.startMs || 0)) continue;
 
           let centered: number[][] = [];
           if (s.points && s.points.length >= 2) {
@@ -374,7 +382,9 @@ export function renderCanvasScene(app: PIXI.Application, layers: Record<string, 
           }
 
           let visiblePts: number[][] = [];
-          if (s.points && s.points.length >= 2) {
+          if (isLocked) {
+            visiblePts = centered;
+          } else if (s.points && s.points.length >= 2) {
             visiblePts = deps.clipPointsForReveal(centered, cState, currentTimeMs);
           } else {
             let [ptStart, ptEnd] = centered;
@@ -725,9 +735,10 @@ export function renderCanvasScene(app: PIXI.Application, layers: Record<string, 
         const lastWriteEndMs = getEquationWriteEndMs(obj);
         const isWriteComplete = currentTimeMs >= lastWriteEndMs;
         const isActiveWriter = Boolean(activeWritingId && obj.id === activeWritingId);
+        const isObjLocked = Boolean((obj as any)._lockedComplete);
         const revealOrder = getRevealOrder(strokes, obj._constructionSequence);
         const nibMaxOrderIndex = isActiveWriter
-          ? maxRevealOrderIndexAtTime(revealOrder, strokes, charStates, currentTimeMs)
+          ? maxRevealOrderIndexAtTime(revealOrder, strokes, charStates, currentTimeMs, isObjLocked)
           : revealOrder.length - 1;
 
         if (strokes.length > 0) {
@@ -736,7 +747,6 @@ export function renderCanvasScene(app: PIXI.Application, layers: Record<string, 
           // at ~3 per frame rather than all-at-once. Prevents the "pop" that occurs
           // when the audio gate batch-releases late events into an already-advanced clock.
           const eqRevMap: Map<string, number> = ((globalThis as any).__eqReveal ||= new Map());
-          const isObjLocked = Boolean((obj as any)._lockedComplete);
           if (isObjLocked) {
             eqRevMap.set(obj.id, revealOrder.length); // always fully revealed
           } else if (isWriteComplete && !isActiveWriter && charStates?.length) {
@@ -749,7 +759,7 @@ export function renderCanvasScene(app: PIXI.Application, layers: Record<string, 
                             )
                         );
           } else if (!isWriteComplete || isActiveWriter) {
-            eqRevMap.delete(obj.id);
+            eqRevMap.set(obj.id, revealOrder.length);
           }
           const eqRevealedCount = eqRevMap.get(obj.id) ?? revealOrder.length;
 
@@ -760,8 +770,9 @@ export function renderCanvasScene(app: PIXI.Application, layers: Record<string, 
             const j = revealOrder[orderIdx]!;
             const s = strokes.at(j)!;
             const cState = deps.resolveStrokeStateForRender(j, s, strokes, charStates, currentTimeMs);
+            const isStrokeAlreadyWritten = isObjLocked && cState && (cState.absoluteStartMs ?? cState.startMs) <= 500;
             const forceFullInk = Boolean(
-              isObjLocked ||
+              (isObjLocked && (!isActiveWriter || isStrokeAlreadyWritten)) ||
               (charStates?.length && !isActiveWriter && isWriteComplete && orderIdx < eqRevealedCount)
             );
             const segmentFullInk =

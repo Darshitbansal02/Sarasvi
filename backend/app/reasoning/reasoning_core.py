@@ -45,6 +45,69 @@ logger = structlog.get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Spatial awareness — abstract planning signal.
+# The layout engine (DocumentFlowLayout) is the sole authority on geometry.
+# We surface only a high-level pressure state so the planner decides *whether*
+# to start a fresh board, never *where* to place pixels — keeping reasoning
+# decoupled from rendering geometry.
+# ---------------------------------------------------------------------------
+_SPATIAL_GUIDANCE = {
+    "ample": (
+        "Ample vertical room remains. You may include a full derivation or multi-step "
+        "visual sequence on this page."
+    ),
+    "limited": (
+        "Vertical space is getting limited. Keep new visuals concise. If the next "
+        "concept is major, the layout engine will open a fresh page automatically."
+    ),
+    "nearly_full": (
+        "This page is nearly full. The layout engine will begin a new page before the "
+        "next major concept — do NOT manually instruct a page break."
+    ),
+}
+
+_COLUMN_GUIDANCE = (
+    "TWO-COLUMN LAYOUT ACTIVE: The board has enough room to display two short, "
+    "independent items side-by-side (left half / right half). Take advantage of "
+    "this by keeping consecutive definitions, facts, or short equations independent "
+    "of each other — the layout engine will automatically pair them side by side. "
+    "Example: place 'Definition: X = …' then immediately 'Unit: kg·m/s²' as separate "
+    "annotation items with no dependency between them."
+)
+
+
+async def _spatial_awareness_prompt(snapshot: dict[str, Any]) -> str:
+    """Build an abstract spatial-pressure prompt fragment from live board state.
+
+    Communicates page state and layout opportunities to the planner without
+    exposing raw pixel measurements. Returns empty string when unavailable.
+    """
+    session_id = snapshot.get("session_id") or ""
+    if not session_id:
+        return ""
+    try:
+        from app.services.session_state_store import session_state_store
+
+        whiteboard = await session_state_store.get_whiteboard(session_id)
+        flow = whiteboard.flow
+        state = flow.space_state
+        page = flow.scene_index + 1
+        column_hint = _COLUMN_GUIDANCE if state == "ample" else ""
+    except Exception:
+        return ""
+
+    lines = [
+        "\nWHITEBOARD SPATIAL SIGNAL:",
+        f"  Current Page: {page}",
+        f"  Space Available: {state}",
+        f"  Guidance: {_SPATIAL_GUIDANCE.get(state, '')}",
+    ]
+    if column_hint:
+        lines.append(f"  {column_hint}")
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
 # Drawing toggle — prompt-only. When settings.diagrams_enabled is False the
 # model is told to skip ALL diagram/geometry primitives (no logic is removed,
 # so flipping the flag back restores drawing instantly). Text visuals and
@@ -120,7 +183,8 @@ _CALL1_SYSTEM = """You are Sarasvi's Semantic & Pedagogical Planner. You handle 
 1. Semantic analysis (learning goal, concepts, domain, intent, constraints)
 2. Reasoning requirements (what cognitive operations are needed, success criteria)
 3. Teaching strategy (pacing, depth, analogy density, visualization intensity)
-4. Lesson complexity classification (how deep/long should the lesson be)
+4. Pedagogical framework selection (Teacher-First Framework: Motivation → Intuition → Observation → Conceptual Understanding → Guided Reasoning → Practical Application → Formal Solution → Summary)
+5. Lesson complexity classification (how deep/long should the lesson be)
 
 COMPLEXITY TIERS — choose the one that matches the question regardless of subject:
 - "trivial": Simple factual recall or 1-step answer (e.g. "What is 2+2?", "What country is Paris in?", "What does simmer mean?")
@@ -133,7 +197,7 @@ Return STRICT JSON:
 {
   "learning_goal": "What the student should understand after this lesson",
   "concepts": ["concept_1", "concept_2"],
-  "domain": "free-text domain string — use the most precise label for the actual subject, e.g. 'mathematics', 'organic chemistry', 'classical music', 'culinary arts', 'carpentry', 'personal finance', 'network engineering', 'history', 'geography', 'philosophy', 'yoga', 'general'",
+  "domain": "free-text domain string — use the most precise label for the actual subject",
   "subdomain": "specific area within domain",
   "prerequisites": ["what student should already know"],
   "student_intent": "explanation|derivation|proof|comparison|problem_solving|troubleshooting|how_to|creative",
@@ -141,6 +205,7 @@ Return STRICT JSON:
   "predicted_misconceptions": ["common mistakes students make"],
   "constraints": ["explicit constraints from the query"],
   "success_criteria": ["Specific, measurable things the student must understand or do"],
+  "pedagogical_framework": "Selected framework (Motivation → Intuition → ... → Summary)",
   "strategy_parameters": {
     "analogy_density": 0.0-1.0,
     "visualization_intensity": 0.0-1.0,
@@ -152,10 +217,12 @@ Return STRICT JSON:
   "strategy_rationale": "Why these strategy choices were made"
 }
 
-visualization_intensity guidance — set to >0.6 ONLY when the topic is inherently spatial/structural (circuits, anatomy, geometry, maps, timelines, molecular structure, data structures, mechanical assemblies, musical notation layouts) OR when the student explicitly asks to draw/sketch/visualize. For purely verbal, procedural, or conceptual topics keep it <0.3.
+PEDAGOGICAL CORE MANDATE:
+- Prioritize Motivation and Intuition: Always establish 'why' and a mental model before introducing 'how' or formal logic.
+- Domain-Independent: Apply the same level of pedagogical rigor to an integral in math, a derivation in physics, a reaction in chemistry, a DSA problem, or a networking protocol.
+- Teacher-First: Act like an expert human teacher, not a domain solver. Focus on guided discovery and conceptual clarity.
 
-Generate at least 8-15 granular success criteria for deep/exhaustive topics.
-For simple/trivial topics, 3-5 criteria are sufficient."""
+visualization_intensity guidance — set to >0.6 ONLY when the topic is inherently spatial/structural (circuits, anatomy, geometry, maps, timelines, molecular structure, data structures, mechanical assemblies, musical notation layouts) OR when the student explicitly asks to draw/sketch/visualize. For purely verbal, procedural, or conceptual topics keep it <0.3."""
 
 
 # Hard cap on untrusted free-text interpolated into an LLM prompt — bounds both
@@ -274,6 +341,9 @@ async def _call1_semantic_plan(
             user_prompt += f"\nSTUDENT DRAWINGS / WRITING ON WHITEBOARD: {student_strokes}\n"
             user_prompt += "The student drew coordinates and strokes above to illustrate or point out what they are asking about. Analyze this drawing in context of their query.\n"
 
+        # Spatial Awareness: abstract board-pressure signal (no pixel geometry).
+        user_prompt += await _spatial_awareness_prompt(snapshot)
+
     user_prompt += f"Student Confusion Level: {confusion_level:.2f} (0=clear, 1=lost)\n"
     user_prompt += f"Student Cognitive Load: {cognitive_load:.2f} (0=fresh, 1=overwhelmed)\n"
 
@@ -375,9 +445,9 @@ Return STRICT JSON:
         {
           "id": "r1",
           "claim": "The factual truth here",
-          "narration": "Full classroom dialogue. Talk directly to the student. Explain the 'why' deeply. Each step MUST have 2-5 sentences minimum.",
+          "narration": "Full classroom dialogue. Natural spoken language ONLY. No raw LaTeX or symbols.",
           "depends_on": [],
-          "visual_type": "equation|annotation|code_block|graph|procedural_sketch|complexity_label|equation_highlight|teacher_gesture|cognitive_pause|camera_move|attention_focus|simulation_start",
+          "visual_type": "equation|annotation|code_block|graph|procedural_sketch|...",
           "visual_data": {"latex": "y = mx + c"},
           "reveal_anchor": "the slope intercept form",
           "difficulty": 0.5
@@ -387,32 +457,25 @@ Return STRICT JSON:
   ]
 }
 
+CRITICAL PEDAGOGICAL MANDATES:
+1. TEACHER-FIRST FLOW: Always follow the planned pedagogical framework (Motivation → Intuition → Observation → Conceptual Understanding → ...). Establish mental models and 'why' before introducing formal logic, algorithms, or derivations.
+2. NARRATION NORMALIZATION (EXPRESSION-TO-SPEECH): Spoken narration MUST be natural human speech. NEVER leak raw LaTeX tokens (\\\\frac, \\\\sqrt, etc.), symbolic markers, OCR fragments, or code syntax into the `narration` field. 
+   - WRONG: "Now we solve \\\\frac{x}{2} = 5."
+   - RIGHT: "Now, let's look at this equation where x is divided by two, which equals five."
+3. STRICT SYNCHRONIZATION: The teacher can ONLY discuss content that is currently visible or actively being presented in the current step. Never front-run future visuals or discuss concepts that haven't been introduced on the board yet.
+4. SPATIAL PRESENTATION & HIERARCHY: Utilize the canvas intelligently. Group related concepts visually. Use visual hierarchy (larger font/highlights) for primary takeaways. Avoid cluttering; start a new page (segment) for major context shifts.
+5. SUBJECT AGNOSTICISM: Apply these expert teaching standards consistently across ALL domains — from Math and Physics to Music, History, and Business.
+
 CRITICAL RULES:
 1. EVERY step MUST have non-empty narration (2-5 complete sentences minimum). NEVER leave narration blank.
 2. For math/equation questions: the FIRST step MUST write the initial equation EXACTLY as stated in the query. Do NOT transform it.
 3. For derivations: each algebraic transformation is a SEPARATE step. Never combine multiple moves.
 4. To show step-by-step on the board: use write_mode="create" with unique board_ids for each equation step. Do NOT use "append"/"replace" with the same board_id.
-5. Keep claims factually correct and verifiable. For math/equations: double-check ALL calculations. Do NOT confuse x^2 = c with x = c. Verify the final solved value satisfies the original equation.
+5. Keep claims factually correct and verifiable. For math/equations: double-check ALL calculations.
 6. reveal_anchor (nib-on-word): set it to a SHORT phrase copied VERBATIM from THIS step's own narration — the exact moment the teacher names/introduces the visual. The teacher writes the visual right as they finish saying that phrase, then keeps explaining with the rest of the narration. Choose a phrase that occurs partway through the narration so explanation continues after the write. It MUST be an exact substring of the narration; if the visual is only meaningful after the whole narration, omit reveal_anchor.
-7. Do NOT generate `procedural_sketch` diagrams unless:
-   - The student explicitly asked to draw, plot, sketch, or visualize, OR
-   - The concept being explained is inherently spatial or visual (e.g., anatomy, cycles, hierarchies, machine structures, pipelines, circuit diagrams, molecular geometry) and cannot be explained clearly using text or equations alone.
-   For purely algebraic, conceptual, mathematical, or verbal steps, use "equation" or "annotation" instead.
-8. STEP COUNT ENFORCEMENT — scale to complexity tier from the semantic plan:
-   - EXCEPTION: when PURE_DRAWING_REQUEST is set, IGNORE these minimums — emit exactly
-     1 segment with 2–4 steps and a single composite sketch (see that instruction). Do
-     NOT pad a "draw <object>" request into extra segments, steps, or pages.
-   - trivial / simple:   2–4 steps per segment, ≥ 3 segments,  ≥  8 total steps.
-   - moderate:           4–6 steps per segment, ≥ 4 segments,  ≥ 15 total steps.
-   - deep:               5–9 steps per segment, ≥ 5 segments,  ≥ 28 total steps.
-   - exhaustive:        7–12 steps per segment, ≥ 6 segments,  ≥ 45 total steps.
-   NEVER collapse a multi-step derivation into fewer steps than the mathematics or science actually requires.
-   For algebraic/symbolic derivations (integration, Maxwell, Schrödinger, Krebs cycle, etc.):
-   EACH individual manipulation is a SEPARATE step — combining "expand + simplify" into one step is FORBIDDEN.
-   For conceptual explanations across ALL domains (history, biology, physics, chemistry):
-   EACH concept, mechanism, or cause–effect link maps to 1–2 dedicated steps.
-9. THIS SYSTEM HANDLES ALL ACADEMIC DOMAINS UNIVERSALLY — mathematics, physics, chemistry, biology, computer science, history, geography, economics, literature, and more. Generate complete, accurate, domain-appropriate lessons for ANY question at ANY difficulty level.
-10. LATEX FORMATTING: Always generate mathematically correct, standard LaTeX. Never use raw text for math symbols (e.g., use \\sin, \\cos, \\tan, \\ln, \\log instead of raw sin, cos, tan, ln, log). Keep all parentheses and braces balanced. Always escape the backslash characters properly inside the JSON payload (e.g., \\frac, \\int, \\nabla). For indefinite integrals, always end with the constant of integration `+ C`.
+7. Do NOT generate `procedural_sketch` diagrams unless explicitly asked or inherently spatial.
+8. STEP COUNT ENFORCEMENT: scale to complexity tier (simple: ≥8 steps, moderate: ≥15, deep: ≥28, exhaustive: ≥45 total).
+9. LATEX FORMATTING: Always generate mathematically correct, standard LaTeX in `visual_data`. Never use raw text for math symbols. Always escape backslashes correctly (e.g., \\\\frac).
 
 VISUAL TYPES:
 - "equation": { "latex": "LaTeX string", "board_id": "optional", "write_mode": "create" }
@@ -597,6 +660,7 @@ async def _call2_lesson_generation(
     plan: SemanticPlan,
     *,
     user: Any = None,
+    snapshot: Optional[dict] = None,
     modifier: str = "",
     confusion_level: float = 0.0,
 ) -> TeachingAST:
@@ -621,12 +685,12 @@ async def _call2_lesson_generation(
         grade = user.learning_profile.get("grade_level") if isinstance(user.learning_profile, dict) else None
         pace = user.learning_profile.get("pace") if isinstance(user.learning_profile, dict) else None
         hobbies_raw = user.learning_profile.get("hobbies", []) if isinstance(user.learning_profile, dict) else []
-        
+
         safe_age = _sanitize_profile_value(age, max_len=10)
         safe_grade = _sanitize_profile_value(grade, max_len=50)
         safe_pace = _sanitize_profile_value(pace, max_len=20)
         safe_name = _sanitize_profile_value(user.name, max_len=100)
-        
+
         safe_hobbies = []
         if isinstance(hobbies_raw, list):
             for h in hobbies_raw:
@@ -637,7 +701,7 @@ async def _call2_lesson_generation(
             s_h = _sanitize_profile_value(hobbies_raw, max_len=50)
             if s_h:
                 safe_hobbies.append(s_h)
-                
+
         if safe_age:
             user_prompt += f"Student Age: {safe_age} years old\n"
         if safe_grade:
@@ -649,8 +713,13 @@ async def _call2_lesson_generation(
         if safe_name:
             user_prompt += f"Student Name: {safe_name}\n"
 
+    # Spatial Awareness: provide abstract board-pressure signal.
+    if snapshot:
+        user_prompt += await _spatial_awareness_prompt(snapshot)
+
     user_prompt += (
         f"Learning Goal: {plan.learning_goal}\n"
+
         f"Domain: {plan.domain}\n"
         f"Complexity: {plan.complexity.value}\n"
         f"Concepts: {plan.concepts}\n"
@@ -858,8 +927,8 @@ Return STRICT JSON matching this schema:
       "id": "r1",
       "claim": "Explanation of the doubt",
       "narration": "Full spoken response. Talk directly to the student. Address them in 2-5 complete sentences explaining the why behind the query.",
-      "visual_type": "equation|annotation|equation_highlight|teacher_gesture|cognitive_pause",
-      "visual_data": {"latex": "x = 20 - 10", "board_id": "eq_2", "write_mode": "create"},
+      "visual_type": "equation",
+      "visual_data": {"latex": "x = 20 - 10", "board_id": "eq_doubt_1", "write_mode": "create"},
       "reveal_anchor": "verbatim short substring from narration matching the reveal"
     }
   ]
@@ -868,9 +937,18 @@ Return STRICT JSON matching this schema:
 CRITICAL RULES:
 1. Limit to 1 or 2 segments total. Keep it brief.
 2. Every reasoning step narration must be 2-5 complete sentences. Never leave narration empty.
-3. If the student circled an equation (coordinate strokes or target object id), reference it directly and highlight it using visual_type: 'equation_highlight' or 'teacher_gesture' with target_ids.
+3. ALWAYS include at least one reasoning step with visual_type "equation" or "annotation" that WRITES new content on the whiteboard. The pen must write the explanation — never reply with only gestures or highlights. If the student circled content, you may additionally use 'equation_highlight' or 'teacher_gesture', but you must ALSO write new clarifying content with visual_type "equation" or "annotation".
 4. Keep the complexity tier strictly as 'trivial' or 'simple'.
-5. LATEX FORMATTING: Always generate mathematically correct, standard LaTeX. Never use raw text for math symbols (e.g., use \\sin, \\cos, \\tan, \\ln, \\log instead of raw sin, cos, tan, ln, log). Keep all parentheses and braces balanced. Always escape the backslash characters properly inside the JSON payload (e.g., \\frac, \\int).
+
+5. LATEX FORMATTING (CRITICAL): Always generate mathematically correct, standard LaTeX in `visual_data`. Never use raw text for math symbols (e.g., use \\sin, \\cos, \\tan, \\ln, \\log, \\pi, \\theta, \\alpha, \\beta, \\gamma, \\Delta, \\rightarrow, \\rightleftharpoons instead of raw text representations like sin, cos, tan, ln, log, pi, theta, alpha, beta, gamma, delta, ->, <=>). Keep all parentheses and braces balanced. Always double-escape backslashes correctly inside the JSON output (e.g., \\\\frac{a}{b}, \\\\sin, \\\\theta).
+
+6. NARRATION NORMALIZATION (EXPRESSION-TO-SPEECH): Spoken narration MUST be natural human speech. NEVER leak raw LaTeX tokens (\\\\frac, \\\\sqrt, etc.), symbolic math markers, or OCR fragments into the `narration` field. For example, do not say "fraction x over two equals five". Say "x divided by two, equals five."
+
+7. SPATIAL AND GESTURE AWARENESS: If a "GESTURE CONTEXT" is provided in the prompt, it indicates a specific element (equation, diagram, annotation) the student pointed at or circled. Your narration and visual steps MUST directly reference and target this element by its content. Never use robotic language like "object eq_52f9a". Refer to it naturally, e.g., "Looking at the equation you circled..." or "Let's explain this term...".
+
+8. EQUATION PLACEMENT & UNIQUE IDs: To write new equations or text on the whiteboard, always use a unique `board_id` (e.g., `eq_doubt_sol_1`, `eq_doubt_sol_2`) and set `write_mode` to "create". Do not overwrite the existing objects by using their IDs, unless you explicitly want to highlight/point at them (in which case use `equation_highlight` or `teacher_gesture` as separate steps).
+
+9. For "equation" visual_type: set write_mode to "create" and provide a latex field. For "annotation" visual_type: provide a text field with the written explanation (1-2 sentences max).
 """
 
 
@@ -971,6 +1049,9 @@ class ReasoningCore:
                 student_strokes = snapshot.get("student_strokes")
                 if student_strokes:
                     user_prompt += f"\nSTUDENT DRAWINGS / WRITING ON WHITEBOARD: {student_strokes}\n"
+
+                # Spatial Awareness: abstract board-pressure signal (no pixel geometry).
+                user_prompt += await _spatial_awareness_prompt(snapshot)
 
             user_prompt += f"Confusion Level: {confusion_level:.2f}\nCognitive Load: {cognitive_load:.2f}\n"
 
@@ -1086,6 +1167,23 @@ class ReasoningCore:
                 )
 
                 sequence = ast.to_teaching_sequence()
+
+                # Verify and repair the doubt explanation sequence if needed
+                domain_key = (plan.domain or "general").lower()
+                report = await verification_service.verify(
+                    sequence,
+                    domain=domain_key,
+                    query=query,
+                )
+                if report.has_rejection:
+                    logger.info("reasoning_core_v2.fast_track_doubt_verification_failed_attempting_repair")
+                    repaired = await self._repair_rejected_steps(ast, report, query)
+                    if repaired:
+                        logger.info("reasoning_core_v2.fast_track_doubt_repair_success")
+                        sequence = ast.to_teaching_sequence()
+                    else:
+                        logger.warning("reasoning_core_v2.fast_track_doubt_repair_failed")
+
                 meta = {
                     "teaching_ast": ast.model_dump(),
                     "prescriptive_plan": {
@@ -1157,6 +1255,7 @@ class ReasoningCore:
             query,
             plan,
             user=user,
+            snapshot=snapshot,
             modifier=call2_modifier,
             confusion_level=confusion_level,
         )

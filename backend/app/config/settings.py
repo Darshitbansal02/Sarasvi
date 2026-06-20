@@ -121,7 +121,7 @@ class Settings(BaseSettings):
     gemini_embedding_model: str = "gemini-embedding-2"
 
     # ── TTS ──────────────────────────────────────────────────────
-    tts_voice: str = "en-US-AriaNeural"
+    tts_voice: str = "en-IN-NeerjaNeural"
     tts_rate: str = "+0%"
 
     # ── Event System ─────────────────────────────────────────────

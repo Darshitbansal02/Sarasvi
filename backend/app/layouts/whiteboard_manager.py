@@ -129,15 +129,25 @@ class WhiteboardManager:
     # ── Properties forwarded from document flow ────────────────────
 
     @property
+    def flow(self) -> DocumentFlowLayout:
+        """Read-only access to the document-flow cursor (spatial authority).
+
+        Downstream timing/reasoning code reads board state (space_state,
+        utilization, content_width) through this; placement still goes via
+        process_instruction / set_column on the manager.
+        """
+        return self._flow
+
+    @property
     def scene_index(self) -> int:
         return self._flow.scene_index
 
     @scene_index.setter
     def scene_index(self, v: int) -> None:
-        # Allow external code to jump the cursor to a specific page.
+        # Jump to page v, restoring the last known cursor on that page so doubt
+        # answers append below existing content instead of writing from the top.
         if self._flow._page != v:
-            self._flow._page = v
-            self._flow._y    = MARGIN_TOP
+            self._flow.restore_page(v)
 
     @property
     def current_column(self) -> str:
@@ -155,19 +165,33 @@ class WhiteboardManager:
         return self._flow.consume_transitions()
 
     # ── Serialization (cross-generation page continuity) ────────────
-    # Only the document-flow cursor crosses request boundaries (scene page +
-    # vertical position). The whiteboard is otherwise rebuilt per teach, so the
-    # heavy layout strategies / shape registry do not need to be persisted.
+    # The document-flow cursor and per-page cursor history cross request
+    # boundaries. Per-page cursors are critical: without them, restore_page()
+    # falls back to MARGIN_TOP and doubt/continuation content overlaps existing
+    # board work by writing from y=50 on a page that already has content.
     def to_state(self) -> dict[str, Any]:
-        return {"page": int(self._flow._page), "y": float(self._flow._y)}
+        # Always write the current page's live y into the cursor dict so that any
+        # future restore_page() back to this page resumes below existing content.
+        cursors = dict(self._flow._page_cursors)
+        cursors[self._flow._page] = float(self._flow.current_y)
+        return {
+            "page":         int(self._flow._page),
+            "y":            float(self._flow.current_y),
+            "page_cursors": cursors,
+        }
 
     @classmethod
     def from_state(cls, state: Optional[dict[str, Any]]) -> "WhiteboardManager":
         wb = cls()
-        if state:
+        if state is not None:  # allow non-None empty dicts through so get() defaults apply
             try:
-                wb._flow._page = int(state.get("page", 0))
-                wb._flow._y = float(state.get("y", MARGIN_TOP))
+                wb._flow._page    = int(state.get("page", 0))
+                saved_y           = float(state.get("y", MARGIN_TOP))
+                wb._flow._y       = saved_y
+                wb._flow._y_left  = saved_y
+                wb._flow._y_right = saved_y
+                raw = state.get("page_cursors") or {}
+                wb._flow._page_cursors = {int(k): float(v) for k, v in raw.items()}
             except (TypeError, ValueError):
                 pass
         return wb

@@ -51,6 +51,15 @@ GAP_MEDIUM      = 24.0      # between distinct content blocks
 GAP_LARGE       = 38.0      # after diagrams, code blocks, complex structures
 GAP_SECTION     = 55.0      # between major lesson sections
 
+# ── Spatial-pressure thresholds ───────────────────────────────────
+# Fraction of the usable page height consumed.  These translate raw
+# geometry into an abstract planning signal so that reasoning and
+# choreography layers consume a high-level state ("ample" | "limited" |
+# "nearly_full") instead of pixel measurements.  The layout engine stays
+# the sole authority on geometry.
+SPACE_LIMITED_RATIO     = 0.66   # ≥ this fraction used → "limited"
+SPACE_NEARLY_FULL_RATIO = 0.85   # ≥ this fraction used → "nearly_full"
+
 
 @dataclass
 class Position:
@@ -95,6 +104,11 @@ class DocumentFlowLayout:
         self._column:        str      = "full" # full | left | right
         self._y_left:        float    = MARGIN_TOP
         self._y_right:       float    = MARGIN_TOP
+        # Per-page cursor memory: page_index → y at the time we left that page.
+        # Populated when _advance_page() is called so that jumping back to a
+        # previous page (e.g. doubt answer on a page already written) resumes at
+        # the bottom of existing content rather than the top.
+        self._page_cursors:  dict[int, float] = {}
 
     # ── Configuration ──────────────────────────────────────────────
 
@@ -130,6 +144,22 @@ class DocumentFlowLayout:
         self._y_right = MARGIN_TOP
         self._column = "full"
         self._transitions.clear()
+        self._page_cursors.clear()
+
+    def restore_page(self, page_idx: int) -> None:
+        """Jump the cursor to page_idx, resuming at the last known y on that page.
+
+        Used when generating a doubt answer on a page the student is viewing —
+        content will be appended below existing material instead of overwriting
+        it from y=MARGIN_TOP.
+        """
+        self._page_cursors[self._page] = self.current_y
+        saved_y = self._page_cursors.get(page_idx, MARGIN_TOP)
+        self._page    = page_idx
+        self._y       = saved_y
+        self._y_left  = saved_y
+        self._y_right = saved_y
+        self._column  = "full"
 
     # ── Read-only state ────────────────────────────────────────────
 
@@ -183,6 +213,26 @@ class DocumentFlowLayout:
     def available_on_page(self) -> float:
         """Expose remaining vertical space on the current page for spatial awareness."""
         return self._available_on_page()
+
+    @property
+    def utilization(self) -> float:
+        """Fraction of the usable page height already consumed (0.0–1.0)."""
+        used = self.current_y - MARGIN_TOP
+        return max(0.0, min(1.0, used / self._usable_height()))
+
+    @property
+    def space_state(self) -> str:
+        """Abstract spatial-pressure signal: 'ample' | 'limited' | 'nearly_full'.
+
+        Downstream reasoning/choreography layers consume this instead of raw
+        pixel measurements, keeping teaching decisions decoupled from geometry.
+        """
+        u = self.utilization
+        if u >= SPACE_NEARLY_FULL_RATIO:
+            return "nearly_full"
+        if u >= SPACE_LIMITED_RATIO:
+            return "limited"
+        return "ample"
 
     # ── Scene transitions ──────────────────────────────────────────
 
@@ -383,10 +433,17 @@ class DocumentFlowLayout:
             self._advance_page()
 
     def _advance_page(self) -> None:
-        self._page += 1
-        self._y     = MARGIN_TOP
-        self._y_left = MARGIN_TOP
-        self._y_right = MARGIN_TOP
+        # Save the cursor on the page we're leaving.
+        self._page_cursors[self._page] = self.current_y
+        next_page = self._page + 1
+        self._page = next_page
+        # If this page already has content (e.g. doubt overflow into a page that
+        # the initial lesson already wrote), resume at the bottom of that content
+        # instead of the top so we never overwrite existing items.
+        saved_y = self._page_cursors.get(next_page, MARGIN_TOP)
+        self._y       = saved_y
+        self._y_left  = saved_y
+        self._y_right = saved_y
         self._transitions.append({
             "scene_index": self._page,
             "scene_id":    f"scene_{self._page}",

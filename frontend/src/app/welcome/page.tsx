@@ -34,11 +34,20 @@ const GRADE_LEVELS = [
 export default function Welcome() {
   const router = useRouter();
   const setUser = useSessionStore((s) => s.setUser);
+  const user = useSessionStore((s) => s.user);
+  const hasHydrated = useSessionStore((s) => s.hasHydrated);
+  const storeAgreedToTerms = useSessionStore((s) => s.agreedToTerms);
 
   const [showLanding, setShowLanding] = useState(true);
   const [showTerms, setShowTerms] = useState(false);
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [isLogin, setIsLogin] = useState(false);
+
+  useEffect(() => {
+    if (hasHydrated && user && storeAgreedToTerms) {
+      router.push("/dashboard");
+    }
+  }, [hasHydrated, user, storeAgreedToTerms, router]);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
 
@@ -465,6 +474,7 @@ export default function Welcome() {
                       toast.error("Please agree to the Terms of Service & AI Disclaimer.");
                       return;
                     }
+                    useSessionStore.getState().setAgreedToTerms(true);
                     toast.success("Welcome to Sarasvi!");
                     router.push("/dashboard");
                   }}

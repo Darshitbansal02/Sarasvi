@@ -155,6 +155,13 @@ export class TTSPlayer {
     }
   }
 
+  public isPlaying(): boolean {
+    if (typeof window !== "undefined" && window.speechSynthesis?.speaking) {
+      return true;
+    }
+    return this._scheduledSources.length > 0;
+  }
+
   /**
    * Decode a segment's audio buffer AHEAD of fire-time (called when the speech
    * event is ingested, not when it plays). This moves the expensive

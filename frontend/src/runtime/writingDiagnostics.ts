@@ -216,7 +216,7 @@ export function computeWritingDiagnostics(
     violations.push(`nibEquationMismatch=nib:${activeEquationId} ink:${activeObj.id}`);
   }
 
-  const nibRevealOrderIndex = maxRevealOrderIndexAtTime(revealOrder, strokes, charStates, currentTimeMs);
+  const nibRevealOrderIndex = maxRevealOrderIndexAtTime(revealOrder, strokes, charStates, currentTimeMs, Boolean(activeObj?._lockedComplete));
   const inkAheadStrokes: number[] = [];
   const completedStrokeMax = activeObj._boardCompletedStrokeMaxIndex as number | undefined;
   const isActiveWriter = activeEquationId === activeObj.id;

@@ -11,6 +11,7 @@ import uuid
 import structlog
 from typing import Any, Dict, List, Optional
 from app.layouts.whiteboard_manager import WhiteboardManager
+from app.layouts.document_flow import PAGE_W, PAGE_H, GAP_MEDIUM
 from app.services.glyph_compiler import compile_latex_to_layout, compile_text_to_layout
 from app.services.timeline_validator import validate_timeline
 from app.dsl.primitives import DSLInstruction, DSLPrimitiveType
@@ -22,6 +23,39 @@ from app.human_stroke_engine.pen_model import PenDynamicsModel
 from app.human_stroke_engine.stroke_physics import StrokePhysicsEngine
 
 logger = structlog.get_logger(__name__)
+
+
+# Segment types representing a major new teaching unit that should not be
+# split across a page boundary.
+_MAJOR_SEGMENT_TYPES = frozenset({"introduction", "derivation", "mental_model"})
+
+# Horizontal auto-scaling — fit wide content inside a column.
+_COLUMN_H_PADDING      = 40.0   # breathing room reserved inside the column width
+_MIN_EQUATION_FONT     = 14.0
+_MIN_TEXT_FONT         = 12.0
+_DEFAULT_EQUATION_FONT = 32.0
+_DEFAULT_TEXT_FONT     = 24.0
+
+# Non-content primitives that carry no board geometry (skipped by the layout pass).
+_NON_LAYOUT_TYPES = frozenset({
+    "camera_move", "cognitive_pause", "teacher_gesture",
+    "simulation_start", "simulation_step", "pause_emphasis",
+    "cursor_move", "pen_state", "attention_focus", "narration_sync",
+})
+
+# Primitive types that flow through the document cursor and can therefore be
+# paired side-by-side in left/right columns. Diagrams, code and data structures
+# use region strategies and always take the full width.
+_PAIRABLE_TYPES = frozenset({
+    DSLPrimitiveType.ANNOTATION,
+    DSLPrimitiveType.CALLOUT,
+    DSLPrimitiveType.EQUATION,
+    DSLPrimitiveType.EQUATION_WRITE,
+})
+
+# Master switch for auto two-column layout (side-by-side narrow items).
+# Flip to False to fall back to single full-width flow.
+_AUTO_COLUMN_ENABLED = True
 
 
 def _pixel_distance(a: tuple, b: tuple) -> float:
@@ -146,8 +180,82 @@ class PresentationCompiler:
 
     def __init__(self, whiteboard_manager: WhiteboardManager):
         self.whiteboard = whiteboard_manager
-        self.scene_width = 1200
-        self.scene_height = 750
+        self.scene_width = PAGE_W
+        self.scene_height = PAGE_H
+
+    # ── Layout-pass helpers ────────────────────────────────────────
+
+    def _measure_width(self, instruction: DSLInstruction) -> float:
+        """Natural rendered width of a pairable instruction at its current font."""
+        data = instruction.data
+        if instruction.primitive_type in (DSLPrimitiveType.EQUATION, DSLPrimitiveType.EQUATION_WRITE):
+            font_sz = float(data.get("font_size", _DEFAULT_EQUATION_FONT))
+            return compile_latex_to_layout(data.get("latex", ""), font_sz)["width"]
+        font_sz = float(data.get("font_size", _DEFAULT_TEXT_FONT))
+        return compile_text_to_layout(data.get("text", ""), font_sz)["width"]
+
+    def _autoscale_to_column(self, instruction: DSLInstruction) -> None:
+        """Shrink annotation/callout font to fit the active column width.
+
+        Equations are intentionally excluded: whiteboard_manager._fit_equation_font
+        already scales them to the active column width at placement time. Pre-scaling
+        here would cause double-shrinking and make equations illegibly small.
+        """
+        if instruction.primitive_type not in (DSLPrimitiveType.ANNOTATION, DSLPrimitiveType.CALLOUT):
+            return
+        max_w = self.whiteboard.flow.content_width - _COLUMN_H_PADDING
+        data = instruction.data
+        font_sz = float(data.get("font_size", _DEFAULT_TEXT_FONT))
+        w = compile_text_to_layout(data.get("text", ""), font_sz)["width"]
+        if w > max_w:
+            data["font_size"] = max(_MIN_TEXT_FONT, font_sz * (max_w / w))
+
+    def _can_pair(self, a: DSLInstruction, b: Optional[DSLInstruction]) -> bool:
+        """Whether two consecutive content items may sit side-by-side.
+
+        Conservative on purpose: both must be narrow text/equation primitives,
+        independent (b must not depend on a, preserving derivation reading
+        order), from the same teaching segment, each must fit a half-width
+        column, and the page must have ample room so the pair isn't split by a
+        page break mid-pair.
+        """
+        if not _AUTO_COLUMN_ENABLED or b is None:
+            return False
+        if a.primitive_type not in _PAIRABLE_TYPES or b.primitive_type not in _PAIRABLE_TYPES:
+            return False
+        if b.depends_on and b.depends_on == a.instruction_id:
+            return False
+        if a.data.get("_segment_type") != b.data.get("_segment_type"):
+            return False
+        if self.whiteboard.flow.space_state != "ample":
+            return False
+        half_col = (self.whiteboard.flow.content_width - GAP_MEDIUM) / 2 - _COLUMN_H_PADDING
+        if half_col <= 0:
+            return False
+        return self._measure_width(a) <= half_col and self._measure_width(b) <= half_col
+
+    def _place_and_track(
+        self, instruction: DSLInstruction, page_before: int,
+        instruction_transitions: list, page_utilization: dict,
+    ) -> None:
+        """Place one instruction and record its page utilization + transitions."""
+        shapes = self.whiteboard.process_instruction(instruction)
+        instruction.data["_layout_shapes"] = shapes
+
+        page_idx = self.whiteboard.scene_index
+        page_utilization[page_idx] = max(
+            page_utilization.get(page_idx, 0), self.whiteboard.flow.utilization * 100
+        )
+
+        transitions = self.whiteboard.consume_scene_transitions()
+        if transitions:
+            instruction_transitions.append({
+                "instruction_id": instruction.instruction_id,
+                "transitions": transitions,
+                "page_before": page_before,
+                "page_after": page_idx,
+                "segment_type": instruction.data.get("_segment_type", "unknown"),
+            })
 
     def compile_presentation(
         self,
@@ -214,7 +322,7 @@ class PresentationCompiler:
                         inst = DSLInstruction(
                             instruction_id=step.step_id,
                             primitive_type=prim_type,
-                            data=vdata,
+                            data={**vdata, "_segment_type": segment.segment_type.value},
                             depends_on=step.depends_on[0] if step.depends_on else None,
                             difficulty=step.difficulty,
                             narration_anchor=step.narration,
@@ -292,18 +400,87 @@ class PresentationCompiler:
 
         lineage_dict = lineage or {}
 
-        # 1. Document Layout Pass (Layout precomputation)
-        scene_transitions = []
-        for instruction in semantic_instructions:
-            if instruction.primitive_type.value in [
-                "camera_move", "cognitive_pause", "teacher_gesture", 
-                "simulation_start", "simulation_step", "pause_emphasis",
-                "cursor_move", "pen_state", "attention_focus", "narration_sync"
-            ]:
-                continue
-            shapes = self.whiteboard.process_instruction(instruction)
-            instruction.data["_layout_shapes"] = shapes
-            scene_transitions.extend(self.whiteboard.consume_scene_transitions())
+        # 1. Document Layout Pass (Spatial Metadata Pass & Board Space Analyzer)
+        # We track physical transitions and board utilization for metadata-driven orchestration.
+        instruction_transitions = []
+        page_utilization = {} # scene_index -> % used
+
+        content_instructions = [
+            inst for inst in semantic_instructions
+            if inst.primitive_type.value not in _NON_LAYOUT_TYPES
+        ]
+
+        idx = 0
+        while idx < len(content_instructions):
+            instruction = content_instructions[idx]
+            seg_type = instruction.data.get("_segment_type", "unknown")
+
+            # Record state before placement (kept across a proactive break so the
+            # resulting transition metadata reflects the page actually left).
+            page_before = self.whiteboard.scene_index
+
+            # Board Space Analyzer — Proactive Transition Logic.
+            # Only break proactively when the page is nearly_full (≥85% used),
+            # not merely "limited" (≥66%). At 85% there is genuinely no room for
+            # a major new segment; at 66% there are ~225 px remaining which is
+            # enough for several items and should not be wasted.
+            if seg_type in _MAJOR_SEGMENT_TYPES and self.whiteboard.flow.space_state == "nearly_full":
+                logger.info("compiler.proactive_page_break",
+                            segment=seg_type,
+                            space_state=self.whiteboard.flow.space_state)
+                self.whiteboard.flow._advance_page()
+
+            # Auto Two-Column Pass — place two narrow, independent items
+            # side-by-side, otherwise flow full-width.
+            partner = content_instructions[idx + 1] if idx + 1 < len(content_instructions) else None
+
+            if self._can_pair(instruction, partner):
+                self.whiteboard.set_column("left")
+                self._autoscale_to_column(instruction)
+                self._place_and_track(instruction, page_before, instruction_transitions, page_utilization)
+
+                self.whiteboard.set_column("right")
+                self._autoscale_to_column(partner)
+                self._place_and_track(partner, page_before, instruction_transitions, page_utilization)
+
+                self.whiteboard.set_column("full")
+                logger.info("compiler.column_pair",
+                            left=instruction.instruction_id,
+                            right=partner.instruction_id,
+                            segment=seg_type)
+                idx += 2
+            else:
+                self.whiteboard.set_column("full")
+                self._autoscale_to_column(instruction)
+                self._place_and_track(instruction, page_before, instruction_transitions, page_utilization)
+                idx += 1
+
+        # 1a. Spatial Metadata Synchronization Pass
+        # No hardcoded text. Instead, we emit structured metadata and sync markers.
+        for trans_info in instruction_transitions:
+            inst_id = trans_info["instruction_id"]
+            
+            # Find the instruction and mark it for camera synchronization
+            for inst in semantic_instructions:
+                if inst.instruction_id == inst_id:
+                    # Sync Drift Fix: Marker for choreography to wait for narration
+                    inst.data["_requires_camera_block"] = True
+                    inst.data["_transition_metadata"] = {
+                        "type": "page_transition",
+                        "from_page": trans_info["page_before"],
+                        "to_page": trans_info["page_after"],
+                        "reason": "document_overflow",
+                        "context": trans_info["segment_type"]
+                    }
+                    break
+            
+            if ast:
+                for segment in ast.segments:
+                    for step in segment.reasoning_steps:
+                        if step.step_id == inst_id:
+                            step.visual.data["_requires_camera_block"] = True
+                            step.visual.data["_transition_metadata"] = inst.data["_transition_metadata"]
+                            break
 
         # 2. Teaching Choreography Pass
         if ast:
@@ -860,7 +1037,22 @@ class PresentationCompiler:
 
                     actual_reveal_start = current_time_ms
 
-                    if speech_evt:
+                    # Gap 5 Fix: Sync Drift / Ghost Writing
+                    # If this instruction triggered a page break, we MUST NOT overlap
+                    # it with the previous narration. We wait for the speech to fully finish.
+                    if target_inst.data.get("_requires_camera_block"):
+                        actual_reveal_start = max(current_time_ms, active_speech_end_time)
+                        timeline.append({
+                            "event_id": f"evt_sync_block_{uuid.uuid4().hex[:6]}",
+                            "parent_event_id": parent_id,
+                            "start_ms": actual_reveal_start,
+                            "type": "narration_block",
+                            "payload": {
+                                "reason": "page_transition_sync",
+                                "block_until_ms": active_speech_end_time
+                            }
+                        })
+                    elif speech_evt:
                         speech_words = speech_evt["payload"].get("words", [])
 
                         if speech_words:
@@ -1149,7 +1341,11 @@ class PresentationCompiler:
             "gesture_events": gesture_events,
             "metadata": {
                 "total_duration_ms": current_time_ms,
-                "scene_index": scene_index
+                "scene_index": scene_index,
+                "spatial_analysis": {
+                    "page_utilization": page_utilization,
+                    "horizontal_auto_scaled": True
+                }
             }
         }
 

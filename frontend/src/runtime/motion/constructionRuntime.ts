@@ -22,6 +22,7 @@ import { interactionArbiter, OWNER, OWNERSHIP_PRIORITY } from "../interaction/in
 import { useCognitiveDensityStore } from "../cognitiveDensity";
 import { cameraCognition } from "./cameraCognition";
 import { simulationEngine } from "./simulationEngine";
+import { BOARD_WIDTH, BOARD_HEIGHT, PAGE_W } from "../boardConstants";
 import {
   getPedagogicalWriteMode,
   pruneSupersededBoardObjects,
@@ -367,9 +368,6 @@ export class ConstructionRuntime {
    * exact vector glyph points that the renderer reveals.
    */
   private _calculateTextWritingCursorTrajectory(timeMs: number): void {
-    const BOARD_WIDTH = 1200;
-    const BOARD_HEIGHT = 750;
-
     const activeTextCandidates = Object.values(this._sceneObjects).filter((obj) =>
       isTextObjectInWriteWindow(obj, timeMs)
     );
@@ -1196,12 +1194,12 @@ export class ConstructionRuntime {
     const layoutWidth = totalTextWidth;
     const layoutHalfW = layoutWidth / 2;
     // Clamp within the object's OWN page — coords are absolute (page N spans
-    // [N*1200, (N+1)*1200)), so a label on an overflow page keeps its offset
+    // [N*PAGE_W, (N+1)*PAGE_W)), so a label on an overflow page keeps its offset
     // instead of being dragged back onto page 0.
     const _px = position.x ?? 0;
-    const _pageOff = (_px > 0 ? Math.floor(_px / 1200) : 0) * 1200;
-    const safeTextX = _pageOff + Math.max(layoutHalfW + 15, Math.min(1200 - layoutHalfW - 15, _px - _pageOff));
-    const safeTextY = Math.max(12, Math.min(750 - 12, position.y ?? 0));
+    const _pageOff = (_px > 0 ? Math.floor(_px / PAGE_W) : 0) * PAGE_W;
+    const safeTextX = _pageOff + Math.max(layoutHalfW + 15, Math.min(BOARD_WIDTH - layoutHalfW - 15, _px - _pageOff));
+    const safeTextY = Math.max(12, Math.min(BOARD_HEIGHT - 12, position.y ?? 0));
     const sceneStamp = resolveSceneStampFromPayload(payload, this._sceneObjects[id] as any);
 
     const shiftedCharStates = this._shiftCharStates(precomputedCharStates, effectiveStart);

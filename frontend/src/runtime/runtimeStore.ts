@@ -19,6 +19,7 @@
 
 import { create } from "zustand";
 import { sceneManager } from "./sceneManager";
+import { PAGE_W, BOARD_WIDTH, BOARD_HEIGHT } from "./boardConstants";
 import { useCognitiveDensityStore } from "./cognitiveDensity";
 import { teacherMotor } from "./motion/teacherMotor";
 import { computeWritingDiagnostics } from "./writingDiagnostics";
@@ -249,6 +250,9 @@ export interface RuntimeStoreState {
   reviewState: import("../types").ReviewState | null;
   detectedMisconceptions: import("../types").MisconceptionEntry[];
   isGenerationCompleted: boolean;
+  /** True when a doubt pivot (G2) just finished and auto-resume (G3) is expected.
+   *  Prevents premature COMPLETED transition between G2 end and G3 arrival. */
+  _awaitingAutoResume: boolean;
 }
 
 export interface RuntimeStoreActions {
@@ -293,7 +297,9 @@ const TRANSITIONS: Record<RUNTIME_STATES, RUNTIME_STATES[]> = {
   [RUNTIME_STATES.PAUSED]: [RUNTIME_STATES.STREAMING, RUNTIME_STATES.REPLAYING, RUNTIME_STATES.IDLE, RUNTIME_STATES.INTERRUPTING],
   [RUNTIME_STATES.INTERRUPTING]: [RUNTIME_STATES.STREAMING, RUNTIME_STATES.ERROR],
   [RUNTIME_STATES.REPLAYING]: [RUNTIME_STATES.PAUSED, RUNTIME_STATES.COMPLETED, RUNTIME_STATES.IDLE, RUNTIME_STATES.STREAMING],
-  [RUNTIME_STATES.COMPLETED]: [RUNTIME_STATES.IDLE, RUNTIME_STATES.REPLAYING],
+  // STREAMING is allowed from COMPLETED so that a G3 auto-resume arriving after G2
+  // completed can re-activate tick() without resetting the whole session.
+  [RUNTIME_STATES.COMPLETED]: [RUNTIME_STATES.IDLE, RUNTIME_STATES.REPLAYING, RUNTIME_STATES.STREAMING],
   [RUNTIME_STATES.ERROR]: [RUNTIME_STATES.IDLE, RUNTIME_STATES.STREAMING, RUNTIME_STATES.CONNECTING],
   [RUNTIME_STATES.REMEDIATING]: [RUNTIME_STATES.STREAMING, RUNTIME_STATES.ERROR, RUNTIME_STATES.IDLE]
 };
@@ -429,6 +435,7 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
   reviewState: null,
   detectedMisconceptions: [],
   isGenerationCompleted: false,
+  _awaitingAutoResume: false,
 
   // ── State Machine Action Logic ───────────────────────────────
 
@@ -487,7 +494,7 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
             concept: state.pedagogicalState?.active_concept || "Concept",
             confusion_level: 0,
             timeline_offset: payload.start_ms ?? payload.timeMs ?? state.currentTimeMs,
-            camera_x: sceneIndex * 1200  // PAGE_W = 1200
+            camera_x: sceneIndex * PAGE_W
           });
         }
         set({ activeSceneId: sId, viewedSceneId: sId });
@@ -555,6 +562,8 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
       narrationStatus: { progress: 0, state: "idle", isAudioSynced: false },
       arbiterState: { owner: "none", canStudentDraw: false, isLocked: false },
       isGenerationCompleted: false,
+      _awaitingAutoResume: false,
+      pedagogicalPlan: {},
     });
   },
 
@@ -585,6 +594,13 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
         t: audioTimeline.currentTimeMs, who: "System", text: "Recalculating approach..."
       }] : [];
 
+      // Reset the audio clock to 0 so tick()'s monotonicTimeMs calculation starts
+      // fresh. Without this, audioTimeline.currentTimeMs retains the old generation's
+      // playback position (e.g. 38 000 ms), causing all new events with start_ms
+      // below that value to fire in the first few frames — making strokes appear
+      // instantly instead of through pen animation.
+      audioTimeline.seek(0);
+
       nextQueue = [];
       nextTranscript = state.transcript.concat(recalculateMessage);
 
@@ -610,15 +626,51 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
         currentTimeMs: 0,
         timelineIndex: 0,
         isGenerationCompleted: false,
+        _awaitingAutoResume: false,
+        viewedScenePinned: false,
       });
+      // For COMPLETED/IDLE (G3 auto-resume): do NOT enter STREAMING here.
+      // teacherMotor.init() is async and calls runtime.reset() which zeroes
+      // _staticWriteLaneEndMs. If tick() starts before reset(), G3 stroke_reveal
+      // events get effectiveStart = old G2 _staticWriteLaneEndMs (~16 000 ms),
+      // completely desynchronised from the new currentTimeMs = 0 clock.
+      // Wait for init() to finish before allowing tick() to process G3 events.
       teacherMotor.init().then(() => {
         registerTranscriptListener(get, set);
+        // Clear stale equation reveal progress for NEW objects only.
+        // Locked objects (carried across generation boundary) must keep their
+        // eqReveal entries so they don't temporarily disappear and re-reveal
+        // stroke-by-stroke when the new generation starts ticking.
+        if (typeof globalThis !== "undefined" && (globalThis as any).__eqReveal) {
+          const revMap = (globalThis as any).__eqReveal as Map<string, number>;
+          const currentObjects = get().sceneObjects;
+          for (const eqId of Array.from(revMap.keys())) {
+            const obj = currentObjects[eqId];
+            if (!obj || !obj._lockedComplete) {
+              revMap.delete(eqId);
+            }
+          }
+        }
         if (state.runtimeState === RUNTIME_STATES.INTERRUPTING) {
           console.info("[runtimeStore] Auto-resuming playback from interruption for new Socratic pivot.");
           get().resumeFromInterruption();
+        } else if (
+          state.runtimeState === RUNTIME_STATES.COMPLETED ||
+          state.runtimeState === RUNTIME_STATES.IDLE
+        ) {
+          // Safe to enter STREAMING now: runtime.reset() has already run inside
+          // init(), so _staticWriteLaneEndMs is 0 and temporalScheduler is at 0.
+          get().setState(RUNTIME_STATES.STREAMING);
         }
       }).catch((err) => {
         console.error("[runtimeStore] Failed to initialize teacherMotor:", err);
+        // Failsafe: if init throws, still enter STREAMING so the session isn't stuck.
+        if (
+          state.runtimeState === RUNTIME_STATES.COMPLETED ||
+          state.runtimeState === RUNTIME_STATES.IDLE
+        ) {
+          get().setState(RUNTIME_STATES.STREAMING);
+        }
       });
     } else if (!currentGenerationId) {
       currentGenerationId = evt.generation_id || null;
@@ -685,6 +737,10 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
       s.runtimeState !== RUNTIME_STATES.REMEDIATING
     ) return;
 
+    const actualDeltaMs = s.runtimeState === RUNTIME_STATES.REPLAYING
+      ? deltaMs * (s.playbackRate || 1.0)
+      : deltaMs;
+
     const rawTimeMs = audioTimeline.currentTimeMs;
     const audioState = String((audioTimeline as any).state);
     // Phase 8 — single monotonic clock. Never let the authoritative time jump
@@ -704,14 +760,14 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
     const audioPaused = audioState === "paused";
     const monotonicTimeMs = (audioDriving || audioPaused)
       ? Math.max(s.currentTimeMs, rawTimeMs)
-      : Math.max(s.currentTimeMs + deltaMs, rawTimeMs);
+      : Math.max(s.currentTimeMs + actualDeltaMs, rawTimeMs);
     // Clamp the FORWARD step. A clock surge (tab refocus, GC stall, first audio
     // anchor) would otherwise advance the playhead hundreds of ms in one frame,
     // making the pen snap across an entire stroke/equation instantly. Capping the
     // step lets the timeline catch up smoothly over a few frames instead. Normal
     // audio drift (≤5 ms/frame) and steady playback (~16 ms/frame) are far below
     // this cap, so in-sync playback is unaffected; only pathological jumps bite.
-    const maxForwardStepMs = Math.max(120, deltaMs * 3);
+    const maxForwardStepMs = Math.max(120, actualDeltaMs * 3);
     const authoritativeTimeMs = Math.min(monotonicTimeMs, s.currentTimeMs + maxForwardStepMs);
 
     // Keep events that haven't fired yet.
@@ -896,7 +952,7 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
               concept: nextPedagogicalState?.active_concept || "Concept",
               confusion_level: 0,
               timeline_offset: evt.start_ms ?? authoritativeTimeMs,
-              camera_x: evt.payload?.camera_x || (evt.payload?.scene_index * 1200),  // PAGE_W = 1200
+              camera_x: evt.payload?.camera_x || (evt.payload?.scene_index * PAGE_W),
             }];
           }
 
@@ -939,8 +995,8 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
             if (!layoutAsset) {
               // Layout asset missing for this object_id — use fallback center position
               const pgIdx = parseInt(currentActiveSceneId.split("_")[1]) || 0;
-              const fallbackX = pgIdx * 1200 + 600;
-              const fallbackY = 375;
+              const fallbackX = pgIdx * PAGE_W + BOARD_WIDTH / 2;
+              const fallbackY = BOARD_HEIGHT / 2;
               evt.payload = evt.payload || {};
               evt.payload.position = evt.payload.position || { x: fallbackX, y: fallbackY };
               console.warn(`[runtimeStore] stroke_reveal missing layout asset for ${objId}, using fallback position (${fallbackX}, ${fallbackY})`);
@@ -1085,7 +1141,11 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
             set({ errorMessage: "We couldn't generate this lesson. Please try again." });
             get().setState(RUNTIME_STATES.ERROR);
           } else {
-            nextIsGenerationCompleted = true;
+            // If auto-resume is pending (G2 doubt just finished, G3 coming),
+            // don't mark generation completed — the lesson isn't done yet.
+            if (!s._awaitingAutoResume) {
+              nextIsGenerationCompleted = true;
+            }
           }
           interactionArbiter.resetIdle();
         }
@@ -1105,7 +1165,7 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
 
     // ── 4. Process Motor Control Tasks ──────────────────────────
     // FIX: Assert return profile configuration layout types as MotionRenderState explicitly
-    const motionRenderState: MotionRenderState = teacherMotor.tick(deltaMs);
+    const motionRenderState: MotionRenderState = teacherMotor.tick(actualDeltaMs);
 
     if (process.env.NODE_ENV !== "production" && typeof window !== 'undefined') {
       try {
@@ -1150,6 +1210,7 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
           id: existing.id,
           sceneId: existing.sceneId || currentActiveSceneId,
           pageIndex: existing.pageIndex ?? motorPageIndex,
+          _lockedComplete: existing._lockedComplete || (mObj as any)._lockedComplete,
         });
       }
     }
@@ -1287,8 +1348,9 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
     if (
       s.runtimeState === RUNTIME_STATES.STREAMING &&
       nextIsGenerationCompleted &&
+      !s._awaitingAutoResume &&
       nextEventQueue.length === 0 &&
-      (audioTimeline as any).state !== "playing" &&
+      !ttsPlayer.isPlaying() &&
       (!motionRenderState.strokes || motionRenderState.strokes.length === 0 || motionRenderState.strokes.every((st: any) => st.state === "completed"))
     ) {
       console.info("[runtimeStore] Lesson complete! Transitioning state to COMPLETED.");
@@ -1322,7 +1384,7 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
 
   returnToLive: () => {
     const buffer = get().liveBuffer;
-    set({ eventQueue: [...get().eventQueue, ...buffer], liveBuffer: [], isRemediating: false });
+    set({ eventQueue: [...get().eventQueue, ...buffer], liveBuffer: [], isRemediating: false, viewedScenePinned: false });
     get().setState(RUNTIME_STATES.STREAMING);
   },
 
@@ -1392,11 +1454,12 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
       teacherMotor.pause();
     } else if (s.runtimeState === RUNTIME_STATES.COMPLETED) {
       // Replay from start
-      get().seekTime(0);
-      set({ runtimeState: RUNTIME_STATES.STREAMING });
-      audioTimeline.resume();
-      ttsPlayer.resume();
-      teacherMotor.resume();
+      // get().seekTime(0);
+      // set({ runtimeState: RUNTIME_STATES.STREAMING });
+      // audioTimeline.resume();
+      // ttsPlayer.resume();
+      // teacherMotor.resume();
+      console.info("[runtimeStore] togglePlayback: session completed, ignoring replay from start request in live session.");
     }
   },
 
@@ -1418,6 +1481,9 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
   },
 
   resumeFromInterruption: async () => {
+    // Mark that a doubt pivot just finished playing; auto-resume (G3) is expected.
+    // This prevents the COMPLETED transition from firing between G2 end and G3 arrival.
+    set({ _awaitingAutoResume: true });
     await teacherMotor.resumeFromInterruption();
     get().returnToLive();
   },
@@ -1433,6 +1499,7 @@ export const useRuntimeStore = create<RuntimeStoreState & RuntimeStoreActions>((
 
   setTTSRate: (rate: number) => {
     teacherMotor.setPlaybackRate?.(rate);
+    set({ playbackRate: rate });
   },
 
   setTTSVolume: (vol: number) => {

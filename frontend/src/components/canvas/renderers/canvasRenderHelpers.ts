@@ -301,10 +301,11 @@ export function getEquationWriteEndMs(
 }
 
 export function isTextObjectInWriteWindow(
-  obj: { type?: string; startMs?: number; _charStates?: Array<{ endMs: number }>; data?: Record<string, any> },
+  obj: { type?: string; startMs?: number; _charStates?: Array<{ endMs: number }>; data?: Record<string, any>; _lockedComplete?: boolean },
   timeMs: number
 ): boolean {
   if (!obj.type || !TEXT_OBJECT_TYPES.has(obj.type)) return false;
+  if (obj._lockedComplete) return false;
   const start = obj.startMs || 0;
   return timeMs >= start && timeMs <= getEquationWriteEndMs(obj);
 }
@@ -413,7 +414,8 @@ export function maxRevealOrderIndexAtTime(
   revealOrder: number[],
   strokes: StrokeEntry[],
   charStates: any[] | undefined,
-  currentTimeMs: number
+  currentTimeMs: number,
+  isLocked?: boolean
 ): number {
   if (!charStates?.length) return revealOrder.length - 1;
 
@@ -421,18 +423,20 @@ export function maxRevealOrderIndexAtTime(
 
   for (let orderIndex = 0; orderIndex < revealOrder.length; orderIndex++) {
     const strokeIndex = revealOrder[orderIndex]!;
-    if (!canRevealStrokeYet(strokeIndex, revealOrder, strokes, charStates, currentTimeMs)) {
+    const cState = resolveStrokeTiming(strokeIndex, strokes, charStates, currentTimeMs);
+    const isAlreadyWritten = isLocked && cState && (cState.absoluteStartMs ?? cState.startMs) <= 500;
+
+    if (!isAlreadyWritten && !canRevealStrokeYet(strokeIndex, revealOrder, strokes, charStates, currentTimeMs)) {
       break;
     }
 
-    const cState = resolveStrokeTiming(strokeIndex, strokes, charStates, currentTimeMs);
     if (!cState) continue;
     const startMs = cState.absoluteStartMs ?? cState.startMs;
-    if (currentTimeMs < startMs) break;
+    if (!isAlreadyWritten && currentTimeMs < startMs) break;
 
     maxVisibleOrderIndex = orderIndex;
     const endMs = cState.absoluteEndMs ?? cState.endMs;
-    if (currentTimeMs < endMs + 25) {
+    if (!isAlreadyWritten && currentTimeMs < endMs + 25) {
       return maxVisibleOrderIndex;
     }
   }
@@ -445,9 +449,10 @@ export function getNibMaxRevealOrderIndex(
   revealOrder: number[],
   strokes: StrokeEntry[],
   charStates: any[] | undefined,
-  currentTimeMs: number
+  currentTimeMs: number,
+  isLocked?: boolean
 ): number {
-  return maxRevealOrderIndexAtTime(revealOrder, strokes, charStates, currentTimeMs);
+  return maxRevealOrderIndexAtTime(revealOrder, strokes, charStates, currentTimeMs, isLocked);
 }
 
 export function drawStackFrameProcedural(g: PIXI.Graphics, theme: CanvasTheme, w: number = 220, h: number = 60, progress: number = 1, highlight: boolean = false, showBorder: boolean = true) {

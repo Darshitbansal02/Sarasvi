@@ -105,7 +105,7 @@ export function GeneratingSessionLoader({
           {/* Pulsing Brain / Book Icon Ring */}
           <div className="h-16 w-16 rounded-full bg-[#FFF5E6] border border-[#F9A01B]/20 flex items-center justify-center mb-6 relative">
             <div className="absolute inset-0 rounded-full border border-[#F9A01B]/30 animate-ping" style={{ animationDuration: "2.5s" }} />
-            <BookOpen className="h-6 w-6 text-[#F9A01B]" strokeWidth={1.5} />
+            <img src="/logo.png" alt="Sarasvi Logo" className="h-10 w-10 object-contain relative z-10" />
           </div>
 
           <h2 className="font-display font-bold text-xl text-[#0B121F] tracking-tight mb-1 text-center">

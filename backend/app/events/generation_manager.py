@@ -81,6 +81,12 @@ class GenerationManager:
         )
         return old_id, self._current_generation_id
 
+    def set_current(self, generation_id: str) -> None:
+        """Register an externally-created generation_id as the active generation.
+        Used by /teach which creates its own gen_id before submitting the background job,
+        so that /interrupt's invalidate_current() returns the correct old ID."""
+        self._current_generation_id = generation_id
+
     def is_valid_generation(self, generation_id: str) -> bool:
         """Check if a generation ID is still valid (not invalidated)."""
         return generation_id not in self._invalidated_generations

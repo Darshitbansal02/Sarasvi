@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
+import re
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +28,52 @@ from app.events.event_bus import get_event_bus
 import logging
 logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
+
+def mask_url(url: str) -> str:
+    """Masks user credentials in connection URLs."""
+    if not isinstance(url, str):
+        return url
+    # Matches scheme://user:password@host
+    match = re.match(r"^([^:]+://)([^:]+):([^@]+)@(.*)$", url)
+    if match:
+        scheme, user, password, rest = match.groups()
+        return f"{scheme}{user}:***@{rest}"
+    return url
+
+
+def redact_sensitive_data(logger, method_name, event_dict):
+    """structlog processor to redact API keys, passwords, and sensitive URLs."""
+    SENSITIVE_KEYS = {
+        "api_key", "apikey", "secret", "password", "token", "jwt_secret",
+        "jwt_secret_key", "groq_api_key", "gemini_api_key", "url", "database_url",
+        "redis_url"
+    }
+
+    for key in list(event_dict.keys()):
+        key_lower = key.lower()
+        is_sensitive = any(sensitive in key_lower for sensitive in SENSITIVE_KEYS)
+        if is_sensitive:
+            val = event_dict[key]
+            if isinstance(val, str):
+                if "://" in val:
+                    event_dict[key] = mask_url(val)
+                else:
+                    if val.lower() != "stub":
+                        event_dict[key] = "***"
+            elif val is not None:
+                event_dict[key] = "***"
+
+    if "event" in event_dict and isinstance(event_dict["event"], str):
+        # Mask database URL patterns or passwords in the message text itself
+        event_dict["event"] = re.sub(
+            r"([a-zA-Z0-9\++\-]+://)([^:]+):([^@]+)@([a-zA-Z0-9\.\-_]+(?::\d+)?[^ \t\n\r]*)",
+            r"\1\2:***@\4",
+            event_dict["event"]
+        )
+
+    return event_dict
+
+
 # Configure structured logging
 structlog.configure(
     processors=[
@@ -35,6 +82,7 @@ structlog.configure(
         structlog.processors.StackInfoRenderer(),
         structlog.dev.set_exc_info,
         structlog.processors.TimeStamper(fmt="iso"),
+        redact_sensitive_data,
         structlog.dev.ConsoleRenderer(),
     ],
     wrapper_class=structlog.make_filtering_bound_logger(0),
@@ -85,7 +133,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize database engine (validates connection)
     engine = get_engine()
-    logger.info("database.connected", url=settings.database_url[:50] + "...")
+    logger.info("database.connected", url=mask_url(settings.database_url))
 
     # Create tables automatically in development
     if settings.is_development:

@@ -9,6 +9,7 @@
 import React, { useEffect, useRef } from "react";
 import * as PIXI from "pixi.js";
 import { useRuntimeStore } from "@/runtime/runtimeStore";
+import { BOARD_WIDTH, BOARD_HEIGHT } from "@/runtime/boardConstants";
 import { audioTimeline } from "@/runtime/audio/audioTimeline";
 import { browserProfiler } from "@/runtime/browserProfiler";
 import { pointerOwnership } from "@/runtime/interaction/pointerOwnership";
@@ -176,14 +177,11 @@ function PixiCanvas(): React.JSX.Element {
 
       const studentDrawingController = new StudentDrawingController({
         app,
-        boardWidth: 1200,
-        boardHeight: 750,
+        boardWidth: BOARD_WIDTH,
+        boardHeight: BOARD_HEIGHT,
       });
       studentDrawingController.attach();
       studentDrawingControllerRef.current = studentDrawingController;
-
-      const BOARD_WIDTH = 1200;
-      const BOARD_HEIGHT = 750;
 
       const drawGrid = () => {
         const state = useRuntimeStore.getState();
@@ -255,8 +253,8 @@ function PixiCanvas(): React.JSX.Element {
       scaleY: SCALE_Y,
       themes: THEMES,
       colors: COLORS,
-      boardWidth: 1200,
-      boardHeight: 750,
+      boardWidth: BOARD_WIDTH,
+      boardHeight: BOARD_HEIGHT,
       resolveHexColor,
       drawStackFrameProcedural,
       drawLegacyStroke,

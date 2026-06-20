@@ -1803,11 +1803,13 @@ def compile_latex_to_layout(latex_str: str, font_size: float = 32.0) -> Dict[str
     layout = layout_node(ast, font_size)
 
     half_w = layout.width / 2.0
+    shift_y = (layout.descent - layout.ascent) / 2.0
     centered_glyphs = []
     for g in layout.glyphs:
         centered_glyphs.append({
             **g,
-            "scaledX": g["scaledX"] - half_w
+            "scaledX": g["scaledX"] - half_w,
+            "scaledY": g["scaledY"] - shift_y
         })
 
     centered_strokes = []
@@ -1816,7 +1818,9 @@ def compile_latex_to_layout(latex_str: str, font_size: float = 32.0) -> Dict[str
             **s,
             "x1": s["x1"] - half_w,
             "x2": s["x2"] - half_w,
-            "points": [(pt[0] - half_w, pt[1]) for pt in s["points"]] if s.get("points") else None
+            "y1": s["y1"] - shift_y,
+            "y2": s["y2"] - shift_y,
+            "points": [(pt[0] - half_w, pt[1] - shift_y) for pt in s["points"]] if s.get("points") else None
         })
 
     return {
@@ -2005,11 +2009,15 @@ def compile_text_to_layout(text: str, font_size: float = 32.0) -> Dict[str, Any]
         current_scaled_start_x += sub_widths[-1] if sub_widths else 0.0
 
     half_w = current_scaled_start_x / 2.0
+    ascent = font_size * 0.75
+    descent = font_size * 0.25
+    shift_y = (descent - ascent) / 2.0
     centered_glyphs = []
     for g in glyphs_layout:
         centered_glyphs.append({
             **g,
-            "scaledX": g["scaledX"] - half_w
+            "scaledX": g["scaledX"] - half_w,
+            "scaledY": g["scaledY"] - shift_y
         })
 
     centered_strokes = []
@@ -2018,7 +2026,9 @@ def compile_text_to_layout(text: str, font_size: float = 32.0) -> Dict[str, Any]
             **s,
             "x1": s["x1"] - half_w,
             "x2": s["x2"] - half_w,
-            "points": [(pt[0] - half_w, pt[1]) for pt in s["points"]] if s.get("points") else None
+            "y1": s["y1"] - shift_y,
+            "y2": s["y2"] - shift_y,
+            "points": [(pt[0] - half_w, pt[1] - shift_y) for pt in s["points"]] if s.get("points") else None
         })
 
     return {

@@ -159,22 +159,11 @@ _event_bus: EventBusInterface | None = None
 
 def get_event_bus() -> EventBusInterface:
     """
-    Get or create the global event bus. The backend is selected by
-    settings.pubsub_backend: 'memory' (in-process, single instance, default) or
-    'redis' (multi-instance pub/sub). Both implement EventBusInterface, so all
-    callers (gateway, routes) are backend-agnostic.
+    Get or create the global event bus. Always uses LocalEventBus (in-memory)
+    per requirement to bypass Redis pub/sub.
     """
     global _event_bus
     if _event_bus is None:
-        from app.config.settings import get_settings
-
-        backend = (get_settings().pubsub_backend or "memory").lower()
-        if backend == "redis":
-            from app.events.redis_event_bus import RedisEventBus
-
-            _event_bus = RedisEventBus(get_settings().redis_url)
-            logger.info("event_bus.backend_selected", backend="redis")
-        else:
-            _event_bus = LocalEventBus()
-            logger.info("event_bus.backend_selected", backend="memory")
+        _event_bus = LocalEventBus()
+        logger.info("event_bus.backend_selected", backend="memory")
     return _event_bus

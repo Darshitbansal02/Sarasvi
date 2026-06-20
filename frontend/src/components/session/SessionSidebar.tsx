@@ -32,14 +32,30 @@ const STATE_LABELS: Record<string, { dot: string; label: string }> = {
 
 function ElapsedTime({ startedAt }: { startedAt: number }) {
   const [elapsed, setElapsed] = useState(0);
+  const runtimeState = useRuntimeStore((s) => s.runtimeState) as string;
+
+  // Timer should tick during active lesson states, not during COMPLETED/PAUSED/ERROR/IDLE
+  const isActive =
+    runtimeState === "STREAMING" ||
+    runtimeState === "INTERRUPTING" ||
+    runtimeState === "REMEDIATING" ||
+    runtimeState === "BUFFERING";
 
   useEffect(() => {
-    if (!startedAt) return;
-    const update = () => setElapsed(Date.now() - startedAt);
-    update();
-    const id = setInterval(update, 1000);
-    return () => clearInterval(id);
+    setElapsed(0);
   }, [startedAt]);
+
+  useEffect(() => {
+    if (!isActive) return;
+    let lastTick = Date.now();
+    const id = setInterval(() => {
+      const now = Date.now();
+      const delta = now - lastTick;
+      lastTick = now;
+      setElapsed((prev) => prev + delta);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isActive]);
 
   const totalSeconds = Math.floor(elapsed / 1000);
   const minutes = Math.floor(totalSeconds / 60);

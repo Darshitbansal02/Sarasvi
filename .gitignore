@@ -81,6 +81,8 @@ scratch_response.json
 test.mp3
 test_*.py
 *_stress.py
+# Ad-hoc end-to-end doubt-flow driver/analyzer scripts (require a running server)
+e2e_*.py
 
 # ── Docker (local overrides — keep Dockerfile and docker-compose.yml) ─────────
 .dockerignore

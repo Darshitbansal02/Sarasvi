@@ -68,6 +68,25 @@ function useKatex() {
   return loaded;
 }
 
+function prepareImplicitMath(line: string): string {
+  const regex = /(\\[a-zA-Z]+)|([a-zA-Z]{2,})|(\s+)|(.)/g;
+  let result = "";
+  let match;
+  while ((match = regex.exec(line)) !== null) {
+    const [_, latex, word, spaces, other] = match;
+    if (latex) {
+      result += latex;
+    } else if (word) {
+      result += `\\text{${word}}`;
+    } else if (spaces) {
+      result += spaces.split("").map(() => "\\ ").join("");
+    } else if (other) {
+      result += other;
+    }
+  }
+  return result;
+}
+
 function renderMath(text: string, katexLoaded: boolean): React.ReactNode {
   if (!katexLoaded || typeof window === "undefined" || !(window as any).katex) {
     return <span className="whitespace-pre-wrap leading-relaxed">{text}</span>;
@@ -159,19 +178,28 @@ function renderMath(text: string, katexLoaded: boolean): React.ReactNode {
         {lines.map((line, idx) => {
           if (!line.trim()) return <br key={idx} />;
           if (/[_^]\{|[_^][A-Za-z0-9+\-]/.test(line)) {
-            return (
-              <span key={idx} className="block my-0.5">
-                <span
-                  dangerouslySetInnerHTML={{
-                    __html: katex.renderToString(line.trim(), {
-                      displayMode: false,
-                      throwOnError: false,
-                      strict: "ignore",
-                    }),
-                  }}
-                />
-              </span>
-            );
+            const formatted = prepareImplicitMath(line);
+            try {
+              return (
+                <span key={idx} className="block my-0.5">
+                  <span
+                    dangerouslySetInnerHTML={{
+                      __html: katex.renderToString(formatted, {
+                        displayMode: false,
+                        throwOnError: false,
+                        strict: "ignore",
+                      }),
+                    }}
+                  />
+                </span>
+              );
+            } catch {
+              return (
+                <span key={idx} className="block whitespace-pre-wrap leading-relaxed">
+                  {line}
+                </span>
+              );
+            }
           }
           return (
             <span key={idx} className="block whitespace-pre-wrap leading-relaxed">

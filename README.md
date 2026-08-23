@@ -84,39 +84,39 @@ Sarasvi strictly enforces architectural layer separation between **backend prese
 
 ```mermaid
 flowchart TD
-    User([Student / User]) -->|Topic or Doubt Input| API[FastAPI Session Gateway]
+    User(["Student / User"]) -->|"Topic or Doubt Input"| API["FastAPI Session Gateway"]
     
     subgraph Backend ["Backend Pipeline (Python 3.12 / FastAPI)"]
-        API --> ReasoningCore[ReasoningCore: 3-Call LLM Planning]
-        ReasoningCore --> Gateway[Verification Gateway\nSymPy / Domain Solvers]
+        API --> ReasoningCore["ReasoningCore: 3-Call LLM Planning"]
+        ReasoningCore --> Gateway["Verification Gateway<br/>(SymPy / Domain Solvers)"]
         
-        Gateway -->|Verified Claims| TeachingAST[TeachingAST Formulation]
-        Gateway -->|Failed Claim| Repair[Auto-Repair Prompt / Fail Closed]
+        Gateway -->|"Verified Claims"| TeachingAST["TeachingAST Formulation"]
+        Gateway -->|"Failed Claim"| Repair["Auto-Repair Prompt / Fail Closed"]
         Repair --> ReasoningCore
         
-        TeachingAST --> PresentationCompiler[Presentation Compiler]
+        TeachingAST --> PresentationCompiler["Presentation Compiler"]
         
         subgraph Compilers ["Compilation Engine"]
-            PresentationCompiler --> WhiteboardMgr[Whiteboard Layout Manager\nSpatial Regions & Font Fit]
-            PresentationCompiler --> GlyphCompiler[AST Glyph Compiler\nVector Stroke Schedules]
-            PresentationCompiler --> Choreographer[Teaching Choreographer & Motion Planner]
+            PresentationCompiler --> WhiteboardMgr["Whiteboard Layout Manager<br/>(Spatial Regions & Font Fit)"]
+            PresentationCompiler --> GlyphCompiler["AST Glyph Compiler<br/>(Vector Stroke Schedules)"]
+            PresentationCompiler --> Choreographer["Teaching Choreographer & Motion Planner"]
         end
         
-        Compilers --> AudioReconcile[TTS Synthesis & Duration Reconciliation\nLinear _charStates Rescaling]
-        AudioReconcile --> EventBus[EventBus & NDJSON Serializer]
+        Compilers --> AudioReconcile["TTS Synthesis & Duration Reconciliation<br/>(Linear _charStates Rescaling)"]
+        AudioReconcile --> EventBus["EventBus & NDJSON Serializer"]
     end
     
-    EventBus -->|WebSocket Stream /ws/{id}| WSClient[Next.js WebSocket Client]
+    EventBus -->|"WebSocket Stream (/ws/session_id)"| WSClient["Next.js WebSocket Client"]
     
     subgraph Frontend ["Frontend Engine (Next.js 16 / React 19 / PixiJS 8)"]
-        WSClient --> RuntimeStore[Zustand Runtime Store & Event Queue]
-        RuntimeStore --> AudioGate[Audio Authority Gate]
-        AudioGate --> TTSPlayer[TTS Audio Timeline Player]
-        AudioGate --> TeacherMotor[Teacher Motor & Construction Runtime]
-        TeacherMotor --> PixiCanvas[PixiJS 2D Canvas Renderer]
+        WSClient --> RuntimeStore["Zustand Runtime Store & Event Queue"]
+        RuntimeStore --> AudioGate["Audio Authority Gate"]
+        AudioGate --> TTSPlayer["TTS Audio Timeline Player"]
+        AudioGate --> TeacherMotor["Teacher Motor & Construction Runtime"]
+        TeacherMotor --> PixiCanvas["PixiJS 2D Canvas Renderer"]
     end
     
-    PixiCanvas -->|Synchronized Whiteboard Lecture| User
+    PixiCanvas -->|"Synchronized Whiteboard Lecture"| User
 ```
 
 ---

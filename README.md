@@ -1,6 +1,6 @@
 <div align="center">
 
-# Sarasvi (मेधा / Medhā)
+# Sarasvi
 ### Deterministic Real-Time AI Whiteboard Teaching Platform with Dynamic Layout & Presentation Compilation
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-sarasvi.vercel.app-000000?style=for-the-badge&logo=vercel&logoColor=white)](https://sarasvi.vercel.app/)

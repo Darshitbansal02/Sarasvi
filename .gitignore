@@ -81,6 +81,9 @@ scratch_response.json
 test.mp3
 test_*.py
 *_stress.py
+live_*.py
+research_papers/
+architecture.*
 # Ad-hoc end-to-end doubt-flow driver/analyzer scripts (require a running server)
 e2e_*.py
 

@@ -819,8 +819,41 @@ class LessonGenerationService:
                             _cs = _asset.get("_charStates")
                             if _cs:
                                 earliest = min((c.get("startMs", float('inf')) for c in _cs), default=None)
+                                latest = max((c.get("endMs", 0) for c in _cs), default=None)
                                 if earliest is not None and earliest != float('inf'):
                                     stroke_reveal_event["start_ms"] = int(earliest)
+                                    if latest is not None and latest >= earliest:
+                                        stroke_reveal_event.setdefault("payload", {})["duration_ms"] = max(1, int(latest - earliest))
+
+        # Re-resolve cursor resource lane to ensure no overlapping cursor/board actions
+        # (e.g. cursor_pause, cursor_move, stroke_reveal) after word-boundary re-anchoring.
+        cursor_resource_types = {"cursor_move", "gesture", "cursor_pause", "stroke_reveal"}
+        last_cursor_end = 0
+
+        for event in procedural_events:
+            if event.get("type") in cursor_resource_types:
+                evt_start = event.get("start_ms", 0)
+                evt_dur = max(0, event.get("payload", {}).get("duration_ms", 0))
+
+                if evt_start < last_cursor_end:
+                    push = last_cursor_end - evt_start
+                    event["start_ms"] = last_cursor_end
+
+                    if event.get("type") == "stroke_reveal":
+                        _obj_id = (event.get("payload") or {}).get("object_id")
+                        _asset = _layout_assets.get(_obj_id) if _obj_id else None
+                        _cs = _asset.get("_charStates") if isinstance(_asset, dict) else None
+                        if _cs:
+                            for _c in _cs:
+                                _c["startMs"] = max(0, int(_c.get("startMs", 0)) + push)
+                                _c["endMs"] = max(0, int(_c.get("endMs", 0)) + push)
+                                _c["absoluteStartMs"] = _c["startMs"]
+                                _c["absoluteEndMs"] = _c["endMs"]
+
+                last_cursor_end = event["start_ms"] + evt_dur
+
+        # Sort the final timeline by start_ms to maintain strict monotonic order
+        procedural_events.sort(key=lambda x: x["start_ms"])
 
         from app.verification.gateway import verification_gateway
         verification_gateway.validate_timeline(procedural_events, layout_assets=_layout_assets)

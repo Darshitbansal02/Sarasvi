@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     # Use real, currently-available model IDs as defaults so the app boots
     # out-of-the-box when a real key is set (validate_models_on_startup will
     # otherwise refuse to start in non-dev on an unknown model).
-    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_model: str = "gemini-3.5-flash-lite"
     gemini_embedding_model: str = "gemini-embedding-2"
 
     # ── TTS ──────────────────────────────────────────────────────
